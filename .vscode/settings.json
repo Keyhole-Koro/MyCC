@@ -1,5 +1,11 @@
 {
     "files.associations": {
-        "stdio.h": "c"
+        "lexer.h": "c",
+        "parser.h": "c",
+        "ast.h": "c",
+        "stdio.h": "c",
+        "string.h": "c",
+        "ctype.h": "c",
+        "stdbool.h": "c"
     }
 }

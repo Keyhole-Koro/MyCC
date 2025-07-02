@@ -1,5 +1,7 @@
 #include "unity.h"
 #include "../inc/lexer.h"
+#include "../inc/parser.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -31,13 +33,22 @@ char *readSampleInput(const char *filePath) {
 }
 
 void test_lexer_processes_sample_input(void) {
-    char *input = readSampleInput("tests/inputs/expr.c");
+    char *input = readSampleInput("tests/inputs/ipt.txt");
 
     Token *tokens = lexer(input);
-    for (Token *cur = tokens; cur != NULL; cur = cur->next) {
-        printf("Token kind: %d, value: %s\n", cur->kind, cur->value);
-    }
     free(input);
+
+    for (Token *cur = tokens; cur != NULL; cur = cur->next) {
+        printf("Token kind: %s, value: %s\n", tokenkind2str(cur->kind), cur->value);
+    }
+
+    Token *cur = tokens;
+    ASTNode *root = parse_program(&cur);
+
+    print_ast(root, 0);
+
+    free_ast(root);
+
 }
 
 int main(void) {

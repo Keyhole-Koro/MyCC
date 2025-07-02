@@ -1,8 +1,6 @@
 #ifndef TOKEN_H
 #define TOKEN_H
 
-#include "AST.h"
-
 typedef int symbol;
 
 typedef enum {
@@ -107,5 +105,7 @@ typedef struct {
 } StringTokenKindMap;
 
 Token *lexer(char *input);
+
+char *tokenkind2str(TokenKind kind);
 
 #endif

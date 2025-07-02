@@ -1,12 +1,12 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -I./src -I./tests -I./inc
+CFLAGS = -Wall -Wextra -Iinc
 SRC = $(wildcard src/*.c tests/*.c)
 OUT = lexer_test
 
 all: test
 
 test: $(SRC)
-	$(CC) $(CFLAGS) src/lexer.c tests/unity.c tests/lexer_test.c -o $(OUT)
+	$(CC) $(CFLAGS) $(filter-out tests/unity.c,$(SRC)) tests/unity.c -o $(OUT)
 	./$(OUT)
 
 clean:

@@ -1,8 +1,10 @@
 #include "lexer.h"
+
 #include <string.h>
 #include <ctype.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 StringTokenKindMap operators[] = {
     {"==", EQ}, {"!=", NEQ}, {"<=", LTE}, {">=", GTE}, {"&&", AND}, {"||", OR},
@@ -24,6 +26,28 @@ StringTokenKindMap reservedWords[] = {
     {"break", BREAK}, {"continue", CONTINUE}, {"return", RETURN},
     {"typedef", TYPEDEF}, {"struct", STRUCT}, {"union", UNION}, {"enum", ENUM}
 };
+
+char *tokenkind2str(TokenKind kind) {
+    for (long unsigned int i = 0; i < sizeof(reservedWords)/sizeof(reservedWords[0]); i++) {
+        if (reservedWords[i].kind == (symbol)kind) {
+            return reservedWords[i].str;
+        }
+    }
+    for (long unsigned int i = 0; i < sizeof(operators)/sizeof(operators[0]); i++) {
+        if (operators[i].kind == (symbol)kind) {
+            return operators[i].str;
+        }
+    }
+    switch (kind) {
+        case NUMBER: return "NUMBER";
+        case STRING_LITERAL: return "STRING_LITERAL";
+        case CHAR_LITERAL: return "CHAR_LITERAL";
+        case IDENTIFIER: return "IDENTIFIER";
+        case EOT: return "EOT";
+        default: break;
+    }
+    return "UNKNOWN";
+}
 
 Token *createToken(Token *cur, int kind, char *value) {
     Token *newTk = malloc(sizeof(Token));
@@ -51,7 +75,7 @@ bool isCommentBlock(char *ptr, char *buffer) {
 }
 
 bool isOperator(char *ptr, TokenKind *tk, char *buffer) {
-    for (int i = 0; i < sizeof(operators)/sizeof(operators[0]); i++) {
+    for (long unsigned int i = 0; i < sizeof(operators)/sizeof(operators[0]); i++) {
         size_t len = strlen(operators[i].str);
         if (strncmp(ptr, operators[i].str, len) == 0) {
             strcpy(buffer, operators[i].str);
@@ -63,7 +87,7 @@ bool isOperator(char *ptr, TokenKind *tk, char *buffer) {
 }
 
 bool isReservedWord(char *ptr, TokenKind *tk, char *buffer) {
-    for (int i = 0; i < sizeof(reservedWords)/sizeof(reservedWords[0]); i++) {
+    for (long unsigned int i = 0; i < sizeof(reservedWords)/sizeof(reservedWords[0]); i++) {
         size_t len = strlen(reservedWords[i].str);
         if (strncmp(ptr, reservedWords[i].str, len) == 0 &&
             !isalnum(ptr[len]) && ptr[len] != '_') {
