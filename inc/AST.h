@@ -12,7 +12,10 @@ typedef enum {
     AST_EXPR_STMT,
     AST_IF,
     AST_RETURN,
-    AST_BLOCK
+    AST_BLOCK,
+    AST_FUNDEF,
+    AST_PARAM,
+    AST_CALL
 } ASTNodeType;
 
 typedef struct ASTNode ASTNode;
@@ -28,7 +31,28 @@ struct ASTNode {
         struct { ASTNode *cond, *then_stmt, *else_stmt; } if_stmt;
         struct { ASTNode *expr; } ret;
         struct { ASTNode **stmts; int count; } block;
+        struct { 
+            char *ret_type;
+            char *name;
+            ASTNode **params;
+            int param_count;
+            ASTNode *body;
+        } fundef;
+        struct {
+            char *type;
+            char *name;
+        } param;
+        struct {
+            char *name;
+            ASTNode **args;
+            int arg_count;
+        } call;
     };
 };
+
+typedef struct FunctionTable {
+    ASTNode **funcs;
+    int count;
+} FunctionTable;
 
 #endif

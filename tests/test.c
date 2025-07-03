@@ -47,8 +47,6 @@ void test_lexer_processes_sample_input(void) {
 
     print_ast(root, 0);
 
-    free_ast(root);
-
 }
 
 int main(void) {

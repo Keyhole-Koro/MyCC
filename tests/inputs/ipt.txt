@@ -1,1 +1,13 @@
-a = b + 1; if(a) return a;
+int max(int a, int b) {
+        return a;
+        return b;
+    }
+
+int main() {
+    int x = 5;
+    int y = 7;
+    int z;
+    z = max(x, y);
+        return 1;
+    return 0;
+}
