@@ -7,6 +7,7 @@ typedef enum {
     AST_NUMBER,
     AST_IDENTIFIER,
     AST_BINARY,
+    AST_VAR_DECL,
     AST_ASSIGN,
     AST_UNARY,
     AST_EXPR_STMT,
@@ -26,6 +27,7 @@ struct ASTNode {
         struct { char *name; } identifier;
         struct { TokenKind op; ASTNode *left, *right; } binary;
         struct { ASTNode *left, *right; } assign;
+        struct { char *type; char *name; ASTNode *init; } var_decl;
         struct { TokenKind op; ASTNode *operand; } unary;
         struct { ASTNode *expr; } expr_stmt;
         struct { ASTNode *cond, *then_stmt, *else_stmt; } if_stmt;
@@ -54,5 +56,7 @@ typedef struct FunctionTable {
     ASTNode **funcs;
     int count;
 } FunctionTable;
+
+void print_ast(ASTNode *node, int indent);
 
 #endif

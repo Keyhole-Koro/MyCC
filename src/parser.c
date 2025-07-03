@@ -75,6 +75,15 @@ ASTNode *new_assign(ASTNode *left, ASTNode *right) {
     node->assign.right = right;
     return node;
 }
+ASTNode *new_var_decl(char *type, char *name, ASTNode *init) {
+    ASTNode *node = malloc(sizeof(ASTNode));
+    node->type = AST_VAR_DECL;
+    node->var_decl.type = strdup(type);
+    node->var_decl.name = strdup(name);
+    node->var_decl.init = init;
+    return node;
+}
+
 ASTNode *new_expr_stmt(ASTNode *expr) {
     ASTNode *node = malloc(sizeof(ASTNode));
     node->type = AST_EXPR_STMT;
@@ -109,17 +118,6 @@ ASTNode *new_call(char *name, ASTNode **args, int arg_count) {
     node->call.args = args;
     node->call.arg_count = arg_count;
     return node;
-}
-
-int match(Token **cur, TokenKind kind) {
-    if (*cur && (*cur)->kind == kind) {
-        *cur = (*cur)->next;
-        return 1;
-    }
-    return 0;
-}
-int is_type(TokenKind kind) {
-    return kind == INT || kind == VOID;
 }
 
 void parse_error(const char *msg, Token *head, Token *cur) {
@@ -167,31 +165,19 @@ void parse_error(const char *msg, Token *head, Token *cur) {
     }
     exit(1);
 }
-
-ASTNode* parse_expr(Token **cur);
-
-ASTNode *parse_call(Token **cur, char *name) {
-    if (!match(cur, L_PARENTHESES))
-        parse_error("expected '(' after function name", NULL, *cur);
-
-    ASTNode **args = NULL;
-    int arg_count = 0;
-    if ((*cur)->kind != R_PARENTHESES) {
-        while (1) {
-            ASTNode *arg = parse_expr(cur);
-            args = realloc(args, sizeof(ASTNode*) * (arg_count+1));
-            args[arg_count++] = arg;
-            if ((*cur)->kind == COMMA) {
-                *cur = (*cur)->next;
-                continue;
-            }
-            break;
-        }
+int expect(Token **cur, TokenKind kind) {
+    if (*cur && (*cur)->kind == kind) {
+        *cur = (*cur)->next;
+        return 1;
     }
-    if (!match(cur, R_PARENTHESES))
-        parse_error("expected ')' after arguments", NULL, *cur);
-    return new_call(name, args, arg_count);
+    return 0;
 }
+int is_type(TokenKind kind) {
+    return kind == INT || kind == VOID;
+}
+
+ASTNode *parse_expr(Token **cur);
+
 
 ASTNode *parse_primary(Token **cur) {
     if ((*cur)->kind == NUMBER) {
@@ -203,25 +189,36 @@ ASTNode *parse_primary(Token **cur) {
         char *name = (*cur)->value;
         *cur = (*cur)->next;
         if ((*cur)->kind == L_PARENTHESES) {
-            return parse_call(cur, name);
+            *cur = (*cur)->next;
+            ASTNode **args = NULL;
+            int arg_count = 0;
+            if ((*cur)->kind != R_PARENTHESES) {
+                while (1) {
+                    ASTNode *arg = parse_expr(cur);
+                    args = realloc(args, sizeof(ASTNode*) * (arg_count + 1));
+                    args[arg_count++] = arg;
+                    if ((*cur)->kind == COMMA) { *cur = (*cur)->next; continue; }
+                    break;
+                }
+            }
+            if (!expect(cur, R_PARENTHESES)) parse_error("expected ')' after args", token_head, *cur);
+            return new_call(name, args, arg_count);
         }
         return new_identifier(name);
     }
     if ((*cur)->kind == L_PARENTHESES) {
         *cur = (*cur)->next;
         ASTNode *node = parse_expr(cur);
-        if (!match(cur, R_PARENTHESES)) parse_error("expected ')'", NULL, *cur);
+        if (!expect(cur, R_PARENTHESES)) parse_error("expected ')'", token_head, *cur);
         return node;
     }
-    parse_error("expected primary expression", NULL, *cur);
+    parse_error("expected primary", token_head, *cur);
     return NULL;
 }
-
 ASTNode *parse_unary(Token **cur) {
     if ((*cur)->kind == SUB) {
-        TokenKind op = (*cur)->kind;
         *cur = (*cur)->next;
-        return new_unary(op, parse_unary(cur));
+        return new_unary(SUB, parse_unary(cur));
     }
     return parse_primary(cur);
 }
@@ -230,8 +227,7 @@ ASTNode *parse_mul(Token **cur) {
     while ((*cur)->kind == MUL || (*cur)->kind == DIV) {
         TokenKind op = (*cur)->kind;
         *cur = (*cur)->next;
-        ASTNode *rhs = parse_unary(cur);
-        node = new_binary(op, node, rhs);
+        node = new_binary(op, node, parse_unary(cur));
     }
     return node;
 }
@@ -240,116 +236,114 @@ ASTNode *parse_add(Token **cur) {
     while ((*cur)->kind == ADD || (*cur)->kind == SUB) {
         TokenKind op = (*cur)->kind;
         *cur = (*cur)->next;
-        ASTNode *rhs = parse_mul(cur);
-        node = new_binary(op, node, rhs);
+        node = new_binary(op, node, parse_mul(cur));
+    }
+    return node;
+}
+ASTNode *parse_relational(Token **cur) {
+    ASTNode *node = parse_add(cur);
+    while (1) {
+        if ((*cur)->kind == LT) {
+            *cur = (*cur)->next;
+            node = new_binary(LT, node, parse_add(cur));
+        } else if ((*cur)->kind == GT) {
+            *cur = (*cur)->next;
+            node = new_binary(GT, node, parse_add(cur));
+        } else if ((*cur)->kind == LTE) {
+            *cur = (*cur)->next;
+            node = new_binary(LTE, node, parse_add(cur));
+        } else if ((*cur)->kind == GTE) {
+            *cur = (*cur)->next;
+            node = new_binary(GTE, node, parse_add(cur));
+        } else break;
+    }
+    return node;
+}
+ASTNode *parse_equality(Token **cur) {
+    ASTNode *node = parse_relational(cur);
+    while (1) {
+        if ((*cur)->kind == EQ) {
+            *cur = (*cur)->next;
+            node = new_binary(EQ, node, parse_relational(cur));
+        } else if ((*cur)->kind == NEQ) {
+            *cur = (*cur)->next;
+            node = new_binary(NEQ, node, parse_relational(cur));
+        } else break;
     }
     return node;
 }
 ASTNode *parse_assign_expr(Token **cur) {
-    ASTNode *lhs = parse_add(cur);
+    ASTNode *node = parse_equality(cur);
     if ((*cur)->kind == ASSIGN) {
         *cur = (*cur)->next;
-        ASTNode *rhs = parse_assign_expr(cur);
-        return new_assign(lhs, rhs);
+        node = new_assign(node, parse_assign_expr(cur));
     }
-    return lhs;
+    return node;
 }
 ASTNode *parse_expr(Token **cur) {
     return parse_assign_expr(cur);
 }
 
 ASTNode* parse_param(Token **cur) {
-    if (!is_type((*cur)->kind)) parse_error("expected type in parameter", NULL, *cur);
+    if (!is_type((*cur)->kind)) parse_error("expected type in param", token_head, *cur);
     char *type = (*cur)->value;
     *cur = (*cur)->next;
-    if ((*cur)->kind != IDENTIFIER) parse_error("expected identifier in parameter", NULL, *cur);
+    if ((*cur)->kind != IDENTIFIER) parse_error("expected param name", token_head, *cur);
     char *name = (*cur)->value;
     *cur = (*cur)->next;
     return new_param(type, name);
 }
-
 ASTNode** parse_param_list(Token **cur, int *out_count) {
     ASTNode **params = NULL;
     int count = 0;
-    if ((*cur)->kind == R_PARENTHESES) {
-        *out_count = 0;
-        return NULL;
-    }
+    if ((*cur)->kind == R_PARENTHESES) { *out_count = 0; return NULL; }
     while (1) {
         ASTNode *param = parse_param(cur);
         params = realloc(params, sizeof(ASTNode*) * (count+1));
         params[count++] = param;
-        if ((*cur)->kind == COMMA) {
-            *cur = (*cur)->next;
-            continue;
-        }
+        if ((*cur)->kind == COMMA) { *cur = (*cur)->next; continue; }
         break;
     }
     *out_count = count;
     return params;
 }
 
-ASTNode* parse_fundef(Token **cur) {
-    if (!is_type((*cur)->kind)) parse_error("expected return type", NULL, *cur);
-    char *ret_type = (*cur)->value;
-    *cur = (*cur)->next;
-    if ((*cur)->kind != IDENTIFIER) parse_error("expected function name", NULL, *cur);
-    char *name = (*cur)->value;
-    *cur = (*cur)->next;
-    if (!match(cur, L_PARENTHESES)) parse_error("expected '(' after function name", NULL, *cur);
-
-    int param_count = 0;
-    ASTNode **params = NULL;
-    if ((*cur)->kind != R_PARENTHESES)
-        params = parse_param_list(cur, &param_count);
-
-    if (!match(cur, R_PARENTHESES)) parse_error("expected ')' after parameter list", NULL, *cur);
-    ASTNode *body = new_block(NULL, 0);
-    ASTNode *fndef = new_fundef(ret_type, name, params, param_count, body);
-    add_function(fndef);
-    return fndef;
-}
-
 ASTNode *parse_stmt(Token **cur);
-ASTNode *parse_if_stmt(Token **cur) {
-    if (!match(cur, IF)) parse_error("expected 'if'", token_head, *cur);
-    if (!match(cur, L_PARENTHESES)) parse_error("expected '(' after if", token_head, *cur);
-    ASTNode *cond = parse_expr(cur);
-    if (!match(cur, R_PARENTHESES)) parse_error("expected ')'", token_head, *cur);
-    ASTNode *then_stmt = parse_stmt(cur);
-    ASTNode *else_stmt = NULL;
-    if ((*cur)->kind == ELSE) {
-        match(cur, ELSE);
-        else_stmt = parse_stmt(cur);
-    }
-    return new_if(cond, then_stmt, else_stmt);
-}
-
-ASTNode *parse_return_stmt(Token **cur) {
-    if (!match(cur, RETURN)) parse_error("expected 'return'", token_head, *cur);
-    ASTNode *expr = parse_expr(cur);
-    if (!match(cur, SEMICOLON)) parse_error("expected ';' after return", token_head, *cur);
-    return new_return(expr);
-}
-
 ASTNode *parse_block(Token **cur) {
-    if (!match(cur, L_BRACE)) parse_error("expected '{'", token_head, *cur);
+    if (!expect(cur, L_BRACE)) parse_error("expected '{'", token_head, *cur);
     ASTNode **stmts = NULL;
     int count = 0;
     while ((*cur)->kind != R_BRACE && (*cur)->kind != EOT) {
         stmts = realloc(stmts, sizeof(ASTNode*) * (count+1));
         stmts[count++] = parse_stmt(cur);
     }
-    if (!match(cur, R_BRACE)) parse_error("expected '}'", token_head, *cur);
+    if (!expect(cur, R_BRACE)) parse_error("expected '}'", token_head, *cur);
     return new_block(stmts, count);
 }
-
+ASTNode *parse_if_stmt(Token **cur) {
+    if (!expect(cur, IF)) parse_error("expected 'if'", token_head, *cur);
+    if (!expect(cur, L_PARENTHESES)) parse_error("expected '(' after if", token_head, *cur);
+    ASTNode *cond = parse_expr(cur);
+    if (!expect(cur, R_PARENTHESES)) parse_error("expected ')'", token_head, *cur);
+    ASTNode *then_stmt = parse_stmt(cur);
+    ASTNode *else_stmt = NULL;
+    if ((*cur)->kind == ELSE) {
+        expect(cur, ELSE);
+        else_stmt = parse_stmt(cur);
+    }
+    return new_if(cond, then_stmt, else_stmt);
+}
+ASTNode *parse_return_stmt(Token **cur) {
+    if (!expect(cur, RETURN)) parse_error("expected 'return'", token_head, *cur);
+    ASTNode *expr = parse_expr(cur);
+    if (!expect(cur, SEMICOLON)) parse_error("expected ';' after return", token_head, *cur);
+    return new_return(expr);
+}
 ASTNode *parse_expr_stmt(Token **cur) {
     ASTNode *expr = parse_expr(cur);
-    if (!match(cur, SEMICOLON)) parse_error("expected ';' after expression", token_head, *cur);
+    if (!expect(cur, SEMICOLON)) parse_error("expected ';' after expression", token_head, *cur);
     return new_expr_stmt(expr);
 }
-
 ASTNode *parse_variable_declaration(Token **cur) {
     if (!is_type((*cur)->kind)) parse_error("expected type for variable declaration", token_head, *cur);
     char *type = (*cur)->value;
@@ -357,23 +351,21 @@ ASTNode *parse_variable_declaration(Token **cur) {
     if ((*cur)->kind != IDENTIFIER) parse_error("expected identifier for variable name", token_head, *cur);
     char *name = (*cur)->value;
     *cur = (*cur)->next;
-    ASTNode *init_expr = NULL;
-    if (match(cur, ASSIGN)) {
-        init_expr = parse_expr(cur);
-        if (!match(cur, SEMICOLON)) parse_error("expected ';' after variable declaration", token_head, *cur);
-    } else {
-        if (!match(cur, SEMICOLON)) parse_error("expected ';' after variable declaration", token_head, *cur);
+    ASTNode *init = NULL;
+    if (expect(cur, ASSIGN)) {
+        init = parse_expr(cur);
     }
-    return new_assign(new_identifier(name), init_expr ? init_expr : new_number("0"));
+    if (!expect(cur, SEMICOLON)) parse_error("expected ';' after variable declaration", token_head, *cur);
+    return new_var_decl(type, name, init);
 }
 
 ASTNode *parse_variable_assignment(Token **cur) {
-    if ((*cur)->kind != IDENTIFIER) parse_error("expected identifier for variable assignment", token_head, *cur);
+    if ((*cur)->kind != IDENTIFIER) parse_error("expected identifier for assignment", token_head, *cur);
     char *name = (*cur)->value;
     *cur = (*cur)->next;
-    if (!match(cur, ASSIGN)) parse_error("expected '=' for variable assignment", token_head, *cur);
+    if (!expect(cur, ASSIGN)) parse_error("expected '=' for assignment", token_head, *cur);
     ASTNode *expr = parse_expr(cur);
-    if (!match(cur, SEMICOLON)) parse_error("expected ';' after variable assignment", token_head, *cur);
+    if (!expect(cur, SEMICOLON)) parse_error("expected ';' after assignment", token_head, *cur);
     return new_assign(new_identifier(name), expr);
 }
 
@@ -382,9 +374,33 @@ ASTNode *parse_stmt(Token **cur) {
     if ((*cur)->kind == RETURN) return parse_return_stmt(cur);
     if ((*cur)->kind == L_BRACE) return parse_block(cur);
     if (is_type((*cur)->kind)) return parse_variable_declaration(cur);
-    return parse_variable_assignment(cur);
+    if ((*cur)->kind == IDENTIFIER && (*cur)->next && (*cur)->next->kind == ASSIGN) {
+        return parse_variable_assignment(cur);
+    }
+    return parse_expr_stmt(cur);
 }
 
+
+ASTNode* parse_fundef(Token **cur) {
+    if (!is_type((*cur)->kind)) parse_error("expected return type", token_head, *cur);
+    char *ret_type = (*cur)->value;
+    *cur = (*cur)->next;
+    if ((*cur)->kind != IDENTIFIER) parse_error("expected function name", token_head, *cur);
+    char *name = (*cur)->value;
+    *cur = (*cur)->next;
+    if (!expect(cur, L_PARENTHESES)) parse_error("expected '(' after function name", token_head, *cur);
+
+    int param_count = 0;
+    ASTNode **params = NULL;
+    if ((*cur)->kind != R_PARENTHESES)
+        params = parse_param_list(cur, &param_count);
+
+    if (!expect(cur, R_PARENTHESES)) parse_error("expected ')' after parameter list", token_head, *cur);
+    ASTNode *body = parse_block(cur);
+    ASTNode *fndef = new_fundef(ret_type, name, params, param_count, body);
+    add_function(fndef);
+    return fndef;
+}
 ASTNode* parse_toplevel(Token **cur) {
     if (is_type((*cur)->kind)) {
         Token *save = *cur;
@@ -396,7 +412,6 @@ ASTNode* parse_toplevel(Token **cur) {
     if (!stmt) parse_error("unexpected toplevel construct", token_head, *cur);
     return stmt;
 }
-
 ASTNode* parse_program(Token **cur) {
     ASTNode **nodes = NULL;
     int count = 0;
@@ -408,7 +423,6 @@ ASTNode* parse_program(Token **cur) {
     }
     return new_block(nodes, count);
 }
-
 void print_ast(ASTNode *node, int indent) {
     if (!node) return;
     for (int i = 0; i < indent; i++) printf("  ");
@@ -420,10 +434,19 @@ void print_ast(ASTNode *node, int indent) {
             printf("Identifier: %s\n", node->identifier.name);
             break;
         case AST_BINARY:
-            printf("Binary: %d\n", node->binary.op);
+            printf("Binary: %s\n", tokenkind2str(node->binary.op));
             print_ast(node->binary.left, indent+1);
             print_ast(node->binary.right, indent+1);
             break;
+        case AST_VAR_DECL:
+            printf("VarDecl: %s %s\n", node->var_decl.type, node->var_decl.name);
+            if (node->var_decl.init) {
+                for (int i = 0; i < indent+1; i++) printf("  ");
+                printf("Init:\n");
+                print_ast(node->var_decl.init, indent+2);
+            }
+            break;
+        
         case AST_ASSIGN:
             printf("Assign\n");
             print_ast(node->assign.left, indent+1);
@@ -460,6 +483,13 @@ void print_ast(ASTNode *node, int indent) {
             }
             print_ast(node->fundef.body, indent+1);
             break;
+        case AST_CALL:
+            printf("Call: %s\n", node->call.name);
+            for (int i = 0; i < node->call.arg_count; i++) {
+                print_ast(node->call.args[i], indent + 1);
+            }
+            break;
+        
         case AST_PARAM:
             printf("Param: %s %s\n", node->param.type, node->param.name);
             break;
