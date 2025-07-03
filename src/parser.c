@@ -7,6 +7,7 @@
 #include "AST.h"
 
 Token *token_head = NULL;
+ASTNode *root;
 
 FunctionTable g_func_table = { NULL, 0 };
 
@@ -180,6 +181,8 @@ ASTNode *parse_expr(Token **cur);
 
 
 ASTNode *parse_primary(Token **cur) {
+    print_ast(root, 0);
+
     if ((*cur)->kind == NUMBER) {
         ASTNode *node = new_number((*cur)->value);
         *cur = (*cur)->next;
@@ -213,6 +216,7 @@ ASTNode *parse_primary(Token **cur) {
         return node;
     }
     parse_error("expected primary", token_head, *cur);
+
     return NULL;
 }
 ASTNode *parse_unary(Token **cur) {
@@ -224,7 +228,7 @@ ASTNode *parse_unary(Token **cur) {
 }
 ASTNode *parse_mul(Token **cur) {
     ASTNode *node = parse_unary(cur);
-    while ((*cur)->kind == MUL || (*cur)->kind == DIV) {
+    while ((*cur)->kind == ASTARISK || (*cur)->kind == DIV) {
         TokenKind op = (*cur)->kind;
         *cur = (*cur)->next;
         node = new_binary(op, node, parse_unary(cur));
@@ -318,7 +322,8 @@ ASTNode *parse_block(Token **cur) {
         stmts[count++] = parse_stmt(cur);
     }
     if (!expect(cur, R_BRACE)) parse_error("expected '}'", token_head, *cur);
-    return new_block(stmts, count);
+    root = new_block(stmts, count);
+    return root;
 }
 ASTNode *parse_if_stmt(Token **cur) {
     if (!expect(cur, IF)) parse_error("expected 'if'", token_head, *cur);
@@ -336,6 +341,8 @@ ASTNode *parse_if_stmt(Token **cur) {
 ASTNode *parse_return_stmt(Token **cur) {
     if (!expect(cur, RETURN)) parse_error("expected 'return'", token_head, *cur);
     ASTNode *expr = parse_expr(cur);
+    printf("Parsed return expression:\n");
+    print_ast(expr, 0);
     if (!expect(cur, SEMICOLON)) parse_error("expected ';' after return", token_head, *cur);
     return new_return(expr);
 }
@@ -508,6 +515,11 @@ void free_ast(ASTNode *node) {
             free_ast(node->assign.left);
             free_ast(node->assign.right);
             break;
+        case AST_VAR_DECL:
+            free(node->var_decl.type);
+            free(node->var_decl.name);
+            if (node->var_decl.init) free_ast(node->var_decl.init);
+            break;
         case AST_UNARY:
             free_ast(node->unary.operand);
             break;
@@ -535,6 +547,13 @@ void free_ast(ASTNode *node) {
             free(node->fundef.params);
             free_ast(node->fundef.body);
             break;
+        case AST_CALL:
+            free(node->call.name);
+            for (int i = 0; i < node->call.arg_count; i++)
+                free_ast(node->call.args[i]);
+            free(node->call.args);
+            break;
+
         case AST_PARAM:
             free(node->param.type);
             free(node->param.name);

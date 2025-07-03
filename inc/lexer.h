@@ -29,7 +29,7 @@ typedef enum {
     INC,      // ++
     DEC,      // --
 
-    POINTER,  // *
+    ASTARISK,  // *
     ADDRESS,  // &
     MEMBER,   // ->
 
