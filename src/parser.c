@@ -77,6 +77,25 @@ StructDef *find_structdef(const char *name) {
     return NULL;
 }
 
+ASTNode *new_string_literal(char *val);
+ASTNode *new_var_decl(ASTNode *type, char *name, ASTNode *init);
+
+ASTNode *new_char_literal(char value) {
+    ASTNode *node = malloc(sizeof(ASTNode));
+    node->type = AST_CHAR_LITERAL;
+    node->char_literal.value = value;
+    return node;
+}
+
+ASTNode *new_var_decl(ASTNode *type, char *name, ASTNode *init) {
+    ASTNode *node = malloc(sizeof(ASTNode));
+    node->type = AST_VAR_DECL;
+    node->var_decl.var_type = type;
+    node->var_decl.name = strdup(name);
+    node->var_decl.init = init;
+    return node;
+}
+
 ASTNode* new_param(char *type, char *name) {
     ASTNode *node = malloc(sizeof(ASTNode));
     node->type = AST_PARAM;
@@ -128,12 +147,11 @@ ASTNode *new_assign(ASTNode *left, ASTNode *right) {
     node->assign.right = right;
     return node;
 }
-ASTNode *new_var_decl(char *type, char *name, ASTNode *init) {
+ASTNode *new_type_node(ASTNode *base_type, int pointer_level) {
     ASTNode *node = malloc(sizeof(ASTNode));
-    node->type = AST_VAR_DECL;
-    node->var_decl.type = strdup(type);
-    node->var_decl.name = strdup(name);
-    node->var_decl.init = init;
+    node->type = AST_TYPE;
+    node->type_node.base_type = base_type;
+    node->type_node.pointer_level = pointer_level;
     return node;
 }
 
@@ -294,7 +312,6 @@ int is_type(TokenKind kind, Token *cur) {
 ASTNode *parse_expr(Token **cur);
 ASTNode *parse_variable_declaration(Token **cur, int need_semicolon);
 ASTNode *parse_struct(Token **cur);
-ASTNode *new_string_literal(char *val);
 
 ASTNode *parse_primary(Token **cur) {
 
@@ -308,6 +325,12 @@ ASTNode *parse_primary(Token **cur) {
         *cur = (*cur)->next;
         return node;
     }
+    if ((*cur)->kind == CHAR_LITERAL) {
+        ASTNode *node = new_char_literal((*cur)->value[0]);
+        *cur = (*cur)->next;
+        return node;
+    }
+    
 
     if ((*cur)->kind == IDENTIFIER) {
         char *name = (*cur)->value;
@@ -339,6 +362,23 @@ ASTNode *parse_primary(Token **cur) {
     parse_error("expected primary", token_head, *cur);
 
     return NULL;
+}
+ASTNode *parse_base_type(Token **cur) {
+    if (!is_type((*cur)->kind, *cur))
+        parse_error("expected type", token_head, *cur);
+    ASTNode *base = new_identifier((*cur)->value);
+    *cur = (*cur)->next;
+    return base;
+}
+
+ASTNode *parse_type(Token **cur) {
+    ASTNode *base_type = parse_base_type(cur);
+    int pointer_level = 0;
+    while ((*cur)->kind == ASTARISK) {
+        pointer_level++;
+        *cur = (*cur)->next;
+    }
+    return new_type_node(base_type, pointer_level);
 }
 ASTNode *new_string_literal(char *val) {
     ASTNode *node = malloc(sizeof(ASTNode));
@@ -416,14 +456,13 @@ ASTNode *parse_expr(Token **cur) {
 }
 
 ASTNode* parse_param(Token **cur) {
-    if (!is_type((*cur)->kind, *cur)) parse_error("expected type in param", token_head, *cur);
-    char *type = (*cur)->value;
-    *cur = (*cur)->next;
+    char *type = parse_type(cur);
     if ((*cur)->kind != IDENTIFIER) parse_error("expected param name", token_head, *cur);
     char *name = (*cur)->value;
     *cur = (*cur)->next;
     return new_param(type, name);
 }
+
 ASTNode** parse_param_list(Token **cur, int *out_count) {
     ASTNode **params = NULL;
     int count = 0;
@@ -518,9 +557,7 @@ ASTNode *parse_expr_stmt(Token **cur) {
     return new_expr_stmt(expr);
 }
 ASTNode *parse_variable_declaration(Token **cur, int need_semicolon) {
-    if (!is_type((*cur)->kind, *cur)) parse_error("expected type for variable declaration", token_head, *cur);
-    char *type = (*cur)->value;
-    *cur = (*cur)->next;
+    ASTNode *type = parse_type(cur); 
     if ((*cur)->kind != IDENTIFIER) parse_error("expected identifier for variable name", token_head, *cur);
     char *name = (*cur)->value;
     *cur = (*cur)->next;
@@ -559,9 +596,7 @@ ASTNode *parse_stmt(Token **cur) {
 }
 
 ASTNode* parse_fundef(Token **cur) {
-    if (!is_type((*cur)->kind, *cur)) parse_error("expected return type", token_head, *cur);
-    char *ret_type = (*cur)->value;
-    *cur = (*cur)->next;
+    char *ret_type = parse_type(cur);
     if ((*cur)->kind != IDENTIFIER) parse_error("expected function name", token_head, *cur);
     char *name = (*cur)->value;
     *cur = (*cur)->next;
@@ -618,8 +653,14 @@ void print_ast(ASTNode *node, int indent) {
             print_ast(node->binary.left, indent+1);
             print_ast(node->binary.right, indent+1);
             break;
+        case AST_TYPE:
+            printf("Type: ");
+            print_ast(node->type_node.base_type, 0);
+            printf(" pointers: %d\n", node->type_node.pointer_level);
+            break;
+        
         case AST_VAR_DECL:
-            printf("VarDecl: %s %s\n", node->var_decl.type, node->var_decl.name);
+            printf("VarDecl: %s %s\n", node->var_decl.var_type, node->var_decl.name);
             if (node->var_decl.init) {
                 for (int i = 0; i < indent+1; i++) printf("  ");
                 printf("Init:\n");
@@ -693,7 +734,24 @@ void print_ast(ASTNode *node, int indent) {
                 printf("Member: %s %s\n", node->struct_stmt.members[i]->struct_member.name, node->struct_stmt.members[i]->struct_member.name);
             }
             break;
-
+        case AST_STRUCT_MEMBER:
+            printf("StructMember: %s %s\n", node->struct_member.type, node
+->struct_member.name);
+            break;
+        case AST_TYPEDEF_STRUCT:
+            printf("TypedefStruct: %s -> %s\n", node->typedef_struct.struct_name, node->typedef_struct.typedef_name);
+            for (int i = 0; i < node->typedef_struct.member_count; i++) {
+                for (int j = 0; j < indent+1; j++) printf("  ");
+                printf("Member: %s %s\n", node->typedef_struct.members[i]->struct_member.type, node->typedef_struct.members[i]->struct_member.name);
+            }
+            break;
+        case AST_STRING_LITERAL:
+            printf("StringLiteral: %s\n", node->string_literal.value);
+            break;
+        case AST_CHAR_LITERAL:
+            printf("CharLiteral: '%c'\n", node->char_literal.value);
+            break;
+        
         default:
             printf("Unknown AST Node Type: %d\n", node->type);
     }
@@ -712,9 +770,15 @@ void free_ast(ASTNode *node) {
             free_ast(node->assign.right);
             break;
         case AST_VAR_DECL:
-            free(node->var_decl.type);
+            free(node->var_decl.var_type);
             free(node->var_decl.name);
             if (node->var_decl.init) free_ast(node->var_decl.init);
+            break;
+        case AST_TYPE:
+            free_ast(node->type_node.base_type);
+            break;
+        case AST_STRING_LITERAL:
+            free(node->string_literal.value);
             break;
         case AST_UNARY:
             free_ast(node->unary.operand);

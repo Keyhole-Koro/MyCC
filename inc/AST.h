@@ -7,6 +7,7 @@ typedef enum {
     AST_NUMBER,
     AST_IDENTIFIER,
     AST_BINARY,
+    AST_TYPE,
     AST_VAR_DECL,
     AST_ASSIGN,
     AST_UNARY,
@@ -24,6 +25,7 @@ typedef enum {
     AST_STRUCT_MEMBER,
     AST_TYPEDEF_STRUCT,
     AST_STRING_LITERAL,
+    AST_CHAR_LITERAL,
 } ASTNodeType;
 
 typedef struct ASTNode ASTNode;
@@ -34,7 +36,15 @@ struct ASTNode {
         struct { char *name; } identifier;
         struct { TokenKind op; ASTNode *left, *right; } binary;
         struct { ASTNode *left, *right; } assign;
-        struct { char *type; char *name; ASTNode *init; } var_decl;
+        struct {
+            ASTNode *base_type;
+            int pointer_level; // number of pointers
+        } type_node;
+        struct {
+            ASTNode *var_type;
+            char *name;
+            ASTNode *init;
+        } var_decl;
         struct { TokenKind op; ASTNode *operand; } unary;
         struct { ASTNode *expr; } expr_stmt;
         struct { ASTNode *cond, *then_stmt, *else_stmt; } if_stmt;
@@ -89,6 +99,9 @@ struct ASTNode {
             int member_count;
             char *typedef_name;
         } typedef_struct;
+        struct {
+            char value;
+        } char_literal;
         
         struct { char *value; } string_literal;
     };

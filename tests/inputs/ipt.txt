@@ -4,7 +4,7 @@
 void print_char(char c) {
 }
 
-char hello_string() {
+char *hello_string() {
     return "hello";
 }
 
@@ -21,10 +21,10 @@ int fact(int n) {
 
 int main() {
     int x = 1;
-    //char y = 'z';
+    char y = 'z';
     int z = add(x, 2);
     char ch = y;
-    char str = hello_string();
+    char *str = hello_string();
 
     print_char(ch);
     do_nothing();
