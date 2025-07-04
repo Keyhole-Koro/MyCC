@@ -6,10 +6,34 @@
 #include "lexer.h"
 #include "AST.h"
 
+typedef struct FunctionTable {
+    ASTNode **funcs;
+    int count;
+} FunctionTable;
+
+#define MAX_TYPE_NAME 128
+typedef struct TypeTable {
+    char **typenames;
+    int count;
+} TypeTable;
+
+typedef struct StructDef {
+    char *name;
+    ASTNode **members;
+    int member_count;
+} StructDef;
+
+typedef struct StructTable {
+    StructDef **structs;
+    int count;
+} StructTable;
+
 Token *token_head = NULL;
 ASTNode *root;
+StructTable g_struct_table = { NULL, 0 };
 
 FunctionTable g_func_table = { NULL, 0 };
+TypeTable g_type_table = { NULL, 0 };
 
 void add_function(ASTNode *fn) {
     g_func_table.funcs = realloc(g_func_table.funcs, sizeof(ASTNode*) * (g_func_table.count + 1));
@@ -21,6 +45,34 @@ ASTNode* find_function(const char *name) {
         if (strcmp(g_func_table.funcs[i]->fundef.name, name) == 0) {
             return g_func_table.funcs[i];
         }
+    }
+    return NULL;
+}
+
+void add_typename(const char *name) {
+    g_type_table.typenames = realloc(g_type_table.typenames, sizeof(char*) * (g_type_table.count + 1));
+    g_type_table.typenames[g_type_table.count++] = strdup(name);
+}
+
+int is_user_typename(const char *name) {
+    for (int i = 0; i < g_type_table.count; i++) {
+        if (strcmp(g_type_table.typenames[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
+void add_structdef(char *name, ASTNode **members, int member_count) {
+    StructDef *def = malloc(sizeof(StructDef));
+    def->name = strdup(name);
+    def->members = members;
+    def->member_count = member_count;
+    g_struct_table.structs = realloc(g_struct_table.structs, sizeof(StructDef*) * (g_struct_table.count + 1));
+    g_struct_table.structs[g_struct_table.count++] = def;
+}
+
+StructDef *find_structdef(const char *name) {
+    for (int i = 0; i < g_struct_table.count; i++) {
+        if (strcmp(g_struct_table.structs[i]->name, name) == 0) return g_struct_table.structs[i];
     }
     return NULL;
 }
@@ -89,6 +141,41 @@ ASTNode *new_expr_stmt(ASTNode *expr) {
     ASTNode *node = malloc(sizeof(ASTNode));
     node->type = AST_EXPR_STMT;
     node->expr_stmt.expr = expr;
+    return node;
+}
+
+ASTNode *new_typedef(char *orig_type, char *new_type) {
+    ASTNode *node = malloc(sizeof(ASTNode));
+    node->type = AST_TYPEDEF;
+    node->typedef_stmt.orig_type = strdup(orig_type);
+    node->typedef_stmt.new_type = strdup(new_type);
+    return node;
+}
+
+ASTNode *new_typedef_struct(char *struct_name, ASTNode **members, int member_count, char *typedef_name) {
+    ASTNode *node = malloc(sizeof(ASTNode));
+    node->type = AST_TYPEDEF_STRUCT;
+    node->typedef_struct.struct_name = strdup(struct_name);
+    node->typedef_struct.members = members;
+    node->typedef_struct.member_count = member_count;
+    node->typedef_struct.typedef_name = strdup(typedef_name);
+    return node;
+}
+
+ASTNode *new_struct(char *name, ASTNode **members, int member_count) {
+    ASTNode *node = malloc(sizeof(ASTNode));
+    node->type = AST_STRUCT;
+    node->struct_stmt.name = strdup(name);
+    node->struct_stmt.members = members;
+    node->struct_stmt.member_count = member_count;
+    return node;
+}
+
+ASTNode *new_struct_member(char *type, char *name) {
+    ASTNode *node = malloc(sizeof(ASTNode));
+    node->type = AST_STRUCT_MEMBER;
+    node->struct_member.type = strdup(type);
+    node->struct_member.name = strdup(name);
     return node;
 }
 
@@ -192,12 +279,22 @@ int expect(Token **cur, TokenKind kind) {
     }
     return 0;
 }
-int is_type(TokenKind kind) {
-    return kind == INT || kind == VOID;
+int is_type(TokenKind kind, Token *cur) {
+    if (kind == VOID ||
+        kind == INT ||
+        kind == CHAR ||
+        kind == FLOAT ||
+        kind == DOUBLE ||
+        kind == BOOL
+    ) return 1;
+    if (kind == IDENTIFIER && is_user_typename(cur->value)) return 1;
+    return 0;
 }
 
 ASTNode *parse_expr(Token **cur);
 ASTNode *parse_variable_declaration(Token **cur, int need_semicolon);
+ASTNode *parse_struct(Token **cur);
+ASTNode *new_string_literal(char *val);
 
 ASTNode *parse_primary(Token **cur) {
 
@@ -206,6 +303,12 @@ ASTNode *parse_primary(Token **cur) {
         *cur = (*cur)->next;
         return node;
     }
+    if ((*cur)->kind == STRING_LITERAL) {
+        ASTNode *node = new_string_literal((*cur)->value);
+        *cur = (*cur)->next;
+        return node;
+    }
+
     if ((*cur)->kind == IDENTIFIER) {
         char *name = (*cur)->value;
         *cur = (*cur)->next;
@@ -236,6 +339,12 @@ ASTNode *parse_primary(Token **cur) {
     parse_error("expected primary", token_head, *cur);
 
     return NULL;
+}
+ASTNode *new_string_literal(char *val) {
+    ASTNode *node = malloc(sizeof(ASTNode));
+    node->type = AST_STRING_LITERAL;
+    node->string_literal.value = strdup(val);
+    return node;
 }
 ASTNode *parse_unary(Token **cur) {
     if ((*cur)->kind == SUB) {
@@ -307,7 +416,7 @@ ASTNode *parse_expr(Token **cur) {
 }
 
 ASTNode* parse_param(Token **cur) {
-    if (!is_type((*cur)->kind)) parse_error("expected type in param", token_head, *cur);
+    if (!is_type((*cur)->kind, *cur)) parse_error("expected type in param", token_head, *cur);
     char *type = (*cur)->value;
     *cur = (*cur)->next;
     if ((*cur)->kind != IDENTIFIER) parse_error("expected param name", token_head, *cur);
@@ -362,7 +471,7 @@ ASTNode *parse_for_stmt(Token **cur) {
     ASTNode *init = NULL, *cond = NULL, *inc = NULL;
 
     if ((*cur)->kind != SEMICOLON) {
-        if (is_type((*cur)->kind)) {
+        if (is_type((*cur)->kind, *cur)) {
             init = parse_variable_declaration(cur, 0);
         } else {
             init = parse_expr(cur);
@@ -409,7 +518,7 @@ ASTNode *parse_expr_stmt(Token **cur) {
     return new_expr_stmt(expr);
 }
 ASTNode *parse_variable_declaration(Token **cur, int need_semicolon) {
-    if (!is_type((*cur)->kind)) parse_error("expected type for variable declaration", token_head, *cur);
+    if (!is_type((*cur)->kind, *cur)) parse_error("expected type for variable declaration", token_head, *cur);
     char *type = (*cur)->value;
     *cur = (*cur)->next;
     if ((*cur)->kind != IDENTIFIER) parse_error("expected identifier for variable name", token_head, *cur);
@@ -442,7 +551,7 @@ ASTNode *parse_stmt(Token **cur) {
     if ((*cur)->kind == FOR) return parse_for_stmt(cur);
     if ((*cur)->kind == RETURN) return parse_return_stmt(cur);
     if ((*cur)->kind == L_BRACE) return parse_block(cur);
-    if (is_type((*cur)->kind)) return parse_variable_declaration(cur, 1);
+    if (is_type((*cur)->kind, *cur)) return parse_variable_declaration(cur, 1);
     if ((*cur)->kind == IDENTIFIER && (*cur)->next && (*cur)->next->kind == ASSIGN) {
         return parse_variable_assignment(cur);
     }
@@ -450,7 +559,7 @@ ASTNode *parse_stmt(Token **cur) {
 }
 
 ASTNode* parse_fundef(Token **cur) {
-    if (!is_type((*cur)->kind)) parse_error("expected return type", token_head, *cur);
+    if (!is_type((*cur)->kind, *cur)) parse_error("expected return type", token_head, *cur);
     char *ret_type = (*cur)->value;
     *cur = (*cur)->next;
     if ((*cur)->kind != IDENTIFIER) parse_error("expected function name", token_head, *cur);
@@ -470,7 +579,9 @@ ASTNode* parse_fundef(Token **cur) {
     return fndef;
 }
 ASTNode* parse_toplevel(Token **cur) {
-    if (is_type((*cur)->kind)) {
+    //if ((*cur)->kind == TYPEDEF) return parse_typedef(cur);
+    //if ((*cur)->kind == STRUCT) return parse_struct(cur);
+    if (is_type((*cur)->kind, *cur)) {
         Token *save = *cur;
         ASTNode *fn = parse_fundef(cur);
         if (fn) return fn;
@@ -485,6 +596,7 @@ ASTNode* parse_program(Token **cur) {
     int count = 0;
     while ((*cur)->kind != EOT) {
         ASTNode *node = parse_toplevel(cur);
+        printf("Parsed node of type: %d\n", node->type);
         if (!node) parse_error("failed to parse toplevel", token_head, *cur);
         nodes = realloc(nodes, sizeof(ASTNode*) * (count+1));
         nodes[count++] = node;
@@ -514,7 +626,6 @@ void print_ast(ASTNode *node, int indent) {
                 print_ast(node->var_decl.init, indent+2);
             }
             break;
-        
         case AST_ASSIGN:
             printf("Assign\n");
             print_ast(node->assign.left, indent+1);
@@ -569,10 +680,22 @@ void print_ast(ASTNode *node, int indent) {
                 printf("Init:\n");
                 print_ast(node->for_stmt.init, indent+2);
             }
-        
         case AST_PARAM:
             printf("Param: %s %s\n", node->param.type, node->param.name);
             break;
+        case AST_TYPEDEF:
+            printf("Typedef: %s -> %s\n", node->typedef_stmt.orig_type, node->typedef_stmt.new_type);
+            break;
+        case AST_STRUCT:
+            printf("Struct: %s\n", node->struct_stmt.name);
+            for (int i = 0; i < node->struct_stmt.member_count; i++) {
+                for (int j = 0; j < indent+1; j++) printf("  ");
+                printf("Member: %s %s\n", node->struct_stmt.members[i]->struct_member.name, node->struct_stmt.members[i]->struct_member.name);
+            }
+            break;
+
+        default:
+            printf("Unknown AST Node Type: %d\n", node->type);
     }
 }
 void free_ast(ASTNode *node) {
@@ -631,6 +754,33 @@ void free_ast(ASTNode *node) {
             free(node->param.type);
             free(node->param.name);
             break;
+        case AST_TYPEDEF:
+            free(node->typedef_stmt.orig_type);
+            free(node->typedef_stmt.new_type);
+            break;
+        case AST_STRUCT:
+            free(node->struct_stmt.name);
+            for (int i = 0; i < node->struct_stmt.member_count; i++)
+                free_ast(node->struct_stmt.members[i]);
+            free(node->struct_stmt.members);
+            break;
+        case AST_STRUCT_MEMBER:
+            free(node->struct_member.type);
+            free(node->struct_member.name);
+            break;  
+        case AST_WHILE:
+            free_ast(node->while_stmt.cond);
+            free_ast(node->while_stmt.body);
+            break;
+        case AST_FOR:
+            if (node->for_stmt.init) free_ast(node->for_stmt.init); 
+            if (node->for_stmt.cond) free_ast(node->for_stmt.cond);
+            if (node->for_stmt.inc) free_ast(node->for_stmt.inc);
+            free_ast(node->for_stmt.body);
+            break;
+        default:
+            fprintf(stderr, "Unknown AST Node Type: %d\n", node->type);
+            exit(1);
     }
     free(node);
 }

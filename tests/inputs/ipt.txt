@@ -1,10 +1,15 @@
-int min(int a, int b) {
-    if (a < b) {
-        return a;
-    } else if (a == b) {
-        return 0;
-    }
-    return b;
+//typedef int MyInt;
+//typedef char MyChar;
+
+void print_char(char c) {
+}
+
+char hello_string() {
+    return "hello";
+}
+
+int add(int a, int b) {
+    return a + b;
 }
 
 int fact(int n) {
@@ -15,19 +20,21 @@ int fact(int n) {
 }
 
 int main() {
-    int x = 3;
-    int y = 5;
-    int z;
-    z = min(x, y);
+    int x = 1;
+    //char y = 'z';
+    int z = add(x, 2);
+    char ch = y;
+    char str = hello_string();
 
-    int f = fact(z);
+    print_char(ch);
+    do_nothing();
 
-    if (f > 5) {
+    if (z > 2) {
         while (z > 0) {
             z = z - 1;
         }
-        return f;
-    } else if (f == 5) {
+        return z;
+    } else if (z == 2) {
         for (int i = 0; i < 5; i = i + 1) {
             x = x + i;
         }

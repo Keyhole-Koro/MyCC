@@ -19,6 +19,11 @@ typedef enum {
     AST_CALL,
     AST_WHILE,
     AST_FOR,
+    AST_TYPEDEF,
+    AST_STRUCT,
+    AST_STRUCT_MEMBER,
+    AST_TYPEDEF_STRUCT,
+    AST_STRING_LITERAL,
 } ASTNodeType;
 
 typedef struct ASTNode ASTNode;
@@ -62,13 +67,32 @@ struct ASTNode {
             ASTNode *inc;
             ASTNode *body;
         } for_stmt;
+        struct {
+            char *orig_type;
+            char *new_type;
+        } typedef_stmt;
+        
+        struct {
+            char *name;
+            ASTNode **members;
+            int member_count;
+        } struct_stmt;
+        
+        struct {
+            char *type;
+            char *name;
+        } struct_member;
+
+        struct {
+            char *struct_name;
+            ASTNode **members;
+            int member_count;
+            char *typedef_name;
+        } typedef_struct;
+        
+        struct { char *value; } string_literal;
     };
 };
-
-typedef struct FunctionTable {
-    ASTNode **funcs;
-    int count;
-} FunctionTable;
 
 void print_ast(ASTNode *node, int indent);
 
