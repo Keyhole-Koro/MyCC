@@ -1,6 +1,3 @@
-//typedef int MyInt;
-//typedef char MyChar;
-
 void print_char(char c) {
 }
 
@@ -19,15 +16,23 @@ int fact(int n) {
     return n * fact(n - 1);
 }
 
+void set_zero(int *p) {
+    *p = 0;
+}
+
 int main() {
     int x = 1;
+    int *px = &x;
     char y = 'z';
+    char *py = &y;
     int z = add(x, 2);
     char ch = y;
     char *str = hello_string();
 
     print_char(ch);
     do_nothing();
+
+    set_zero(&z);
 
     if (z > 2) {
         while (z > 0) {

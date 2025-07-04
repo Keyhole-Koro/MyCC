@@ -330,7 +330,6 @@ ASTNode *parse_primary(Token **cur) {
         *cur = (*cur)->next;
         return node;
     }
-    
 
     if ((*cur)->kind == IDENTIFIER) {
         char *name = (*cur)->value;
@@ -390,6 +389,14 @@ ASTNode *parse_unary(Token **cur) {
     if ((*cur)->kind == SUB) {
         *cur = (*cur)->next;
         return new_unary(SUB, parse_unary(cur));
+    }
+    if ((*cur)->kind == AMPERSAND) {
+        *cur = (*cur)->next;
+        return new_unary(AMPERSAND, parse_unary(cur));
+    }
+    if ((*cur)->kind == ASTARISK) {
+        *cur = (*cur)->next;
+        return new_unary(ASTARISK, parse_unary(cur));
     }
     return parse_primary(cur);
 }
@@ -571,7 +578,6 @@ ASTNode *parse_variable_declaration(Token **cur, int need_semicolon) {
     return new_var_decl(type, name, init);
 }
 
-
 ASTNode *parse_variable_assignment(Token **cur) {
     if ((*cur)->kind != IDENTIFIER) parse_error("expected identifier for assignment", token_head, *cur);
     char *name = (*cur)->value;
@@ -673,7 +679,12 @@ void print_ast(ASTNode *node, int indent) {
             print_ast(node->assign.right, indent+1);
             break;
         case AST_UNARY:
-            printf("Unary: %d\n", node->unary.op);
+            if(node->unary.op == AMPERSAND)
+                printf("Unary: & (address)\n");
+            else if(node->unary.op == SUB)
+                printf("Unary: - (negate)\n");
+            else
+                printf("Unary: %d\n", node->unary.op);
             print_ast(node->unary.operand, indent+1);
             break;
         case AST_EXPR_STMT:
@@ -842,6 +853,7 @@ void free_ast(ASTNode *node) {
             if (node->for_stmt.inc) free_ast(node->for_stmt.inc);
             free_ast(node->for_stmt.body);
             break;
+            
         default:
             fprintf(stderr, "Unknown AST Node Type: %d\n", node->type);
             exit(1);
