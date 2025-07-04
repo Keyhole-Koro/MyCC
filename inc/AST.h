@@ -16,7 +16,9 @@ typedef enum {
     AST_BLOCK,
     AST_FUNDEF,
     AST_PARAM,
-    AST_CALL
+    AST_CALL,
+    AST_WHILE,
+    AST_FOR,
 } ASTNodeType;
 
 typedef struct ASTNode ASTNode;
@@ -49,6 +51,17 @@ struct ASTNode {
             ASTNode **args;
             int arg_count;
         } call;
+        struct {
+            ASTNode *cond;
+            ASTNode *body;
+        } while_stmt;
+        
+        struct {
+            ASTNode *init;
+            ASTNode *cond;
+            ASTNode *inc;
+            ASTNode *body;
+        } for_stmt;
     };
 };
 

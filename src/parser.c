@@ -91,6 +91,24 @@ ASTNode *new_expr_stmt(ASTNode *expr) {
     node->expr_stmt.expr = expr;
     return node;
 }
+
+ASTNode *new_while(ASTNode *cond, ASTNode *body) {
+    ASTNode *node = malloc(sizeof(ASTNode));
+    node->type = AST_WHILE;
+    node->while_stmt.cond = cond;
+    node->while_stmt.body = body;
+    return node;
+}
+ASTNode *new_for(ASTNode *init, ASTNode *cond, ASTNode *inc, ASTNode *body) {
+    ASTNode *node = malloc(sizeof(ASTNode));
+    node->type = AST_FOR;
+    node->for_stmt.init = init;
+    node->for_stmt.cond = cond;
+    node->for_stmt.inc = inc;
+    node->for_stmt.body = body;
+    return node;
+}
+
 ASTNode *new_if(ASTNode *cond, ASTNode *then_stmt, ASTNode *else_stmt) {
     ASTNode *node = malloc(sizeof(ASTNode));
     node->type = AST_IF;
@@ -122,6 +140,7 @@ ASTNode *new_call(char *name, ASTNode **args, int arg_count) {
 }
 
 void parse_error(const char *msg, Token *head, Token *cur) {
+    print_ast(root, 0);
     // prevs[2] ... prevs[0] ... cur ... nexts[0] ... nexts[2]
     Token *prevs[3] = {NULL, NULL, NULL};
     Token *nexts[3] = {NULL, NULL, NULL};
@@ -178,10 +197,9 @@ int is_type(TokenKind kind) {
 }
 
 ASTNode *parse_expr(Token **cur);
-
+ASTNode *parse_variable_declaration(Token **cur, int need_semicolon);
 
 ASTNode *parse_primary(Token **cur) {
-    print_ast(root, 0);
 
     if ((*cur)->kind == NUMBER) {
         ASTNode *node = new_number((*cur)->value);
@@ -313,6 +331,7 @@ ASTNode** parse_param_list(Token **cur, int *out_count) {
 }
 
 ASTNode *parse_stmt(Token **cur);
+
 ASTNode *parse_block(Token **cur) {
     if (!expect(cur, L_BRACE)) parse_error("expected '{'", token_head, *cur);
     ASTNode **stmts = NULL;
@@ -325,6 +344,46 @@ ASTNode *parse_block(Token **cur) {
     root = new_block(stmts, count);
     return root;
 }
+
+ASTNode *parse_while_stmt(Token **cur) {
+    if (!expect(cur, WHILE)) parse_error("expected 'while'", token_head, *cur);
+    if (!expect(cur, L_PARENTHESES)) parse_error("expected '(' after while", token_head, *cur);
+    ASTNode *cond = parse_expr(cur);
+    if (!expect(cur, R_PARENTHESES)) parse_error("expected ')'", token_head, *cur);
+    ASTNode *body = parse_stmt(cur);
+    return new_while(cond, body);
+}
+
+ASTNode *parse_for_stmt(Token **cur) {
+    if (!expect(cur, FOR)) parse_error("expected 'for'", token_head, *cur);
+    if (!expect(cur, L_PARENTHESES)) parse_error("expected '(' after for", token_head, *cur);
+
+    // for (init; cond; inc)
+    ASTNode *init = NULL, *cond = NULL, *inc = NULL;
+
+    if ((*cur)->kind != SEMICOLON) {
+        if (is_type((*cur)->kind)) {
+            init = parse_variable_declaration(cur, 0);
+        } else {
+            init = parse_expr(cur);
+        }
+    }
+    if (!expect(cur, SEMICOLON)) parse_error("expected ';' after for-init", token_head, *cur);
+
+    if ((*cur)->kind != SEMICOLON) {
+        cond = parse_expr(cur);
+    }
+    if (!expect(cur, SEMICOLON)) parse_error("expected second ';' in for", token_head, *cur);
+
+    if ((*cur)->kind != R_PARENTHESES) {
+        inc = parse_expr(cur);
+    }
+    if (!expect(cur, R_PARENTHESES)) parse_error("expected ')' after for", token_head, *cur);
+
+    ASTNode *body = parse_stmt(cur);
+    return new_for(init, cond, inc, body);
+}
+
 ASTNode *parse_if_stmt(Token **cur) {
     if (!expect(cur, IF)) parse_error("expected 'if'", token_head, *cur);
     if (!expect(cur, L_PARENTHESES)) parse_error("expected '(' after if", token_head, *cur);
@@ -341,8 +400,6 @@ ASTNode *parse_if_stmt(Token **cur) {
 ASTNode *parse_return_stmt(Token **cur) {
     if (!expect(cur, RETURN)) parse_error("expected 'return'", token_head, *cur);
     ASTNode *expr = parse_expr(cur);
-    printf("Parsed return expression:\n");
-    print_ast(expr, 0);
     if (!expect(cur, SEMICOLON)) parse_error("expected ';' after return", token_head, *cur);
     return new_return(expr);
 }
@@ -351,7 +408,7 @@ ASTNode *parse_expr_stmt(Token **cur) {
     if (!expect(cur, SEMICOLON)) parse_error("expected ';' after expression", token_head, *cur);
     return new_expr_stmt(expr);
 }
-ASTNode *parse_variable_declaration(Token **cur) {
+ASTNode *parse_variable_declaration(Token **cur, int need_semicolon) {
     if (!is_type((*cur)->kind)) parse_error("expected type for variable declaration", token_head, *cur);
     char *type = (*cur)->value;
     *cur = (*cur)->next;
@@ -362,9 +419,12 @@ ASTNode *parse_variable_declaration(Token **cur) {
     if (expect(cur, ASSIGN)) {
         init = parse_expr(cur);
     }
-    if (!expect(cur, SEMICOLON)) parse_error("expected ';' after variable declaration", token_head, *cur);
+    if (need_semicolon) {
+        if (!expect(cur, SEMICOLON)) parse_error("expected ';' after variable declaration", token_head, *cur);
+    }
     return new_var_decl(type, name, init);
 }
+
 
 ASTNode *parse_variable_assignment(Token **cur) {
     if ((*cur)->kind != IDENTIFIER) parse_error("expected identifier for assignment", token_head, *cur);
@@ -378,15 +438,16 @@ ASTNode *parse_variable_assignment(Token **cur) {
 
 ASTNode *parse_stmt(Token **cur) {
     if ((*cur)->kind == IF) return parse_if_stmt(cur);
+    if ((*cur)->kind == WHILE) return parse_while_stmt(cur);
+    if ((*cur)->kind == FOR) return parse_for_stmt(cur);
     if ((*cur)->kind == RETURN) return parse_return_stmt(cur);
     if ((*cur)->kind == L_BRACE) return parse_block(cur);
-    if (is_type((*cur)->kind)) return parse_variable_declaration(cur);
+    if (is_type((*cur)->kind)) return parse_variable_declaration(cur, 1);
     if ((*cur)->kind == IDENTIFIER && (*cur)->next && (*cur)->next->kind == ASSIGN) {
         return parse_variable_assignment(cur);
     }
     return parse_expr_stmt(cur);
 }
-
 
 ASTNode* parse_fundef(Token **cur) {
     if (!is_type((*cur)->kind)) parse_error("expected return type", token_head, *cur);
@@ -496,6 +557,18 @@ void print_ast(ASTNode *node, int indent) {
                 print_ast(node->call.args[i], indent + 1);
             }
             break;
+        case AST_WHILE:
+            printf("While\n");
+            print_ast(node->while_stmt.cond, indent+1);
+            print_ast(node->while_stmt.body, indent+1);
+            break;
+        case AST_FOR:
+            printf("For\n");
+            if (node->for_stmt.init) {
+                for (int i = 0; i < indent+1; i++) printf("  ");
+                printf("Init:\n");
+                print_ast(node->for_stmt.init, indent+2);
+            }
         
         case AST_PARAM:
             printf("Param: %s %s\n", node->param.type, node->param.name);

@@ -9,7 +9,7 @@
 StringTokenKindMap operators[] = {
     {"==", EQ}, {"!=", NEQ}, {"<=", LTE}, {">=", GTE}, {"&&", AND}, {"||", OR},
     {"<<", SHL}, {">>", SHR}, {"++", INC}, {"--", DEC}, {"*", ASTARISK}, {"->", MEMBER},
-    {"+", ADD}, {"-", SUB}, {"*", MUL}, {"/", DIV}, {"%", MOD}, {"=", ASSIGN},
+    {"+", ADD}, {"-", SUB}, {"/", DIV}, {"%", MOD}, {"=", ASSIGN},
     {"(", L_PARENTHESES}, {")", R_PARENTHESES}, {";", SEMICOLON}, {",", COMMA},
     {"{", L_BRACE}, {"}", R_BRACE}, {"[", L_BRACKET}, {"]", R_BRACKET},
     {"<", LT}, {">", GT}, {".", DOT}, {"!", NOT}, {"?", QUESTION}, {":", COLON},

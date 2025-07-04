@@ -6,7 +6,7 @@ typedef int symbol;
 typedef enum {
     ADD,      // +
     SUB,      // -
-    MUL,      // *
+    //MUL,      // *
     DIV,      // /
     MOD,      // %
     ASSIGN,   // =
