@@ -27,6 +27,8 @@ typedef enum {
     AST_TYPEDEF_STRUCT,
     AST_STRING_LITERAL,
     AST_CHAR_LITERAL,
+    AST_MEMBER_ACCESS,
+    AST_ARROW_ACCESS,
 } ASTNodeType;
 
 typedef enum {
@@ -119,6 +121,16 @@ struct ASTNode {
         } char_literal;
 
         struct { char *value; } string_literal;
+
+        struct {
+            ASTNode *lhs;
+            char *member; // member name
+        } member_access;
+
+        struct {
+            ASTNode *lhs;
+            char *member; // member name
+        } arrow_access;
     };
 };
 

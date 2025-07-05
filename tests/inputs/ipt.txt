@@ -1,3 +1,8 @@
+struct TypeTable {
+    char **typenames;
+    int count;
+};
+
 void print_char(char c) {
 }
 
@@ -33,6 +38,11 @@ int main() {
     const unsigned int z = add(x, 2);
     char ch = y;
     char *str = hello_string();
+
+    TypeTable table;
+    char *tn = table.typenames;
+    TypeTable *ptr_table;
+    ptr_table->typenames;
 
     int arr[5];
     int mat[10][10];

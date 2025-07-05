@@ -33,7 +33,7 @@ typedef enum {
 
     ASTARISK,  // *
     ADDRESS,  // &
-    MEMBER,   // ->
+    ARROW,   // ->
 
     BOOL,     // bool
     INT,      // int
