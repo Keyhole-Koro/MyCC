@@ -29,6 +29,8 @@ typedef enum {
     AST_CHAR_LITERAL,
     AST_MEMBER_ACCESS,
     AST_ARROW_ACCESS,
+    AST_BREAK,
+    AST_CONTINUE,
 } ASTNodeType;
 
 typedef enum {

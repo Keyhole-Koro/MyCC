@@ -47,6 +47,11 @@ int main() {
     int arr[5];
     int mat[10][10];
 
+    for (int i = 0; i < a; i++) {
+        continue;
+        break;
+    }
+
     print_char(ch);
     do_nothing();
 
