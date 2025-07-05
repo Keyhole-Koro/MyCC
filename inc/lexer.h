@@ -26,6 +26,8 @@ typedef enum {
     BITNOT,   // ~
     SHL,      // <<
     SHR,      // >>
+    POST_INC, // ++ (postfix)
+    POST_DEC, // -- (postfix)
     INC,      // ++
     DEC,      // --
 

@@ -28,17 +28,76 @@ StringTokenKindMap reservedWords[] = {
 };
 
 char *tokenkind2str(TokenKind kind) {
-    for (long unsigned int i = 0; i < sizeof(reservedWords)/sizeof(reservedWords[0]); i++) {
-        if (reservedWords[i].kind == (symbol)kind) {
-            return reservedWords[i].str;
-        }
-    }
-    for (long unsigned int i = 0; i < sizeof(operators)/sizeof(operators[0]); i++) {
-        if (operators[i].kind == (symbol)kind) {
-            return operators[i].str;
-        }
-    }
     switch (kind) {
+        case EQ: return "EQ";
+        case NEQ: return "NEQ";
+        case LTE: return "LTE";
+        case GTE: return "GTE";
+        case AND: return "AND";
+        case OR: return "OR";
+        case SHL: return "SHL";
+        case SHR: return "SHR";
+        case INC: return "INC";
+        case DEC: return "DEC";
+        case ASTARISK: return "ASTARISK";
+        case MEMBER: return "MEMBER";
+        case ADD: return "ADD";
+        case SUB: return "SUB";
+        case DIV: return "DIV";
+        case MOD: return "MOD";
+        case ASSIGN: return "ASSIGN";
+        case L_PARENTHESES: return "L_PARENTHESES";
+        case R_PARENTHESES: return "R_PARENTHESES";
+        case SEMICOLON: return "SEMICOLON";
+        case COMMA: return "COMMA";
+        case L_BRACE: return "L_BRACE";
+        case R_BRACE: return "R_BRACE";
+        case L_BRACKET: return "L_BRACKET";
+        case R_BRACKET: return "R_BRACKET";
+        case LT: return "LT";
+        case GT: return "GT";
+        case DOT: return "DOT";
+        case NOT: return "NOT";
+        case QUESTION: return "QUESTION";
+        case COLON: return "COLON";
+        case BITOR: return "BITOR";
+        case BITXOR: return "BITXOR";
+        case BITNOT: return "BITNOT";
+        case HASH: return "HASH";
+        case AMPERSAND: return "AMPERSAND";
+
+        case SIZEOF: return "SIZEOF";
+        case BOOL: return "BOOL";
+        case INT: return "INT";
+        case CHAR: return "CHAR";
+        case FLOAT: return "FLOAT";
+        case DOUBLE: return "DOUBLE";
+        case VOID: return "VOID";
+        case LONG: return "LONG";
+        case SHORT: return "SHORT";
+        case UNSIGNED: return "UNSIGNED";
+        case SIGNED: return "SIGNED";
+        case CONST: return "CONST";
+        case STATIC: return "STATIC";
+        case EXTERN: return "EXTERN";
+        case AUTO: return "AUTO";
+        case REGISTER: return "REGISTER";
+        case IF: return "IF";
+        case ELSE: return "ELSE";
+        case WHILE: return "WHILE";
+        case DO: return "DO";
+        case FOR: return "FOR";
+        case SWITCH: return "SWITCH";
+        case CASE: return "CASE";
+        case DEFAULT: return "DEFAULT";
+        case BREAK: return "BREAK";
+        case CONTINUE: return "CONTINUE";
+        case RETURN: return "RETURN";
+        case TYPEDEF: return "TYPEDEF";
+        case STRUCT: return "STRUCT";
+        case UNION: return "UNION";
+        case ENUM: return "ENUM";
+
         case NUMBER: return "NUMBER";
         case STRING_LITERAL: return "STRING_LITERAL";
         case CHAR_LITERAL: return "CHAR_LITERAL";

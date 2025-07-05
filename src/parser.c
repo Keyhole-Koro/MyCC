@@ -147,11 +147,12 @@ ASTNode *new_assign(ASTNode *left, ASTNode *right) {
     node->assign.right = right;
     return node;
 }
-ASTNode *new_type_node(ASTNode *base_type, int pointer_level) {
+ASTNode *new_type_node(ASTNode *base_type, int pointer_level, int modifiers) {
     ASTNode *node = malloc(sizeof(ASTNode));
     node->type = AST_TYPE;
     node->type_node.base_type = base_type;
     node->type_node.pointer_level = pointer_level;
+    node->type_node.type_modifiers = modifiers;
     return node;
 }
 
@@ -298,6 +299,8 @@ int expect(Token **cur, TokenKind kind) {
     return 0;
 }
 int is_type(TokenKind kind, Token *cur) {
+    if (kind == CONST || kind == UNSIGNED || kind == SIGNED) return 1;
+
     if (kind == VOID ||
         kind == INT ||
         kind == CHAR ||
@@ -371,20 +374,47 @@ ASTNode *parse_base_type(Token **cur) {
 }
 
 ASTNode *parse_type(Token **cur) {
-    ASTNode *base_type = parse_base_type(cur);
+    int modifiers = 0;
+
+    while ((*cur)->kind == CONST || (*cur)->kind == UNSIGNED || (*cur)->kind == SIGNED) {
+        if ((*cur)->kind == CONST)    modifiers |= TYPEMOD_CONST;
+        if ((*cur)->kind == UNSIGNED) modifiers |= TYPEMOD_UNSIGNED;
+        if ((*cur)->kind == SIGNED)   modifiers |= TYPEMOD_SIGNED;
+        *cur = (*cur)->next;
+    }
+
+    if (!is_type((*cur)->kind, *cur))
+        parse_error("expected base type", token_head, *cur);
+
+    char *base_type = strdup((*cur)->value);
+    *cur = (*cur)->next;
+
     int pointer_level = 0;
     while ((*cur)->kind == ASTARISK) {
         pointer_level++;
         *cur = (*cur)->next;
     }
-    return new_type_node(base_type, pointer_level);
+
+    return new_type_node(base_type, pointer_level, modifiers);
 }
+
+
 ASTNode *new_string_literal(char *val) {
     ASTNode *node = malloc(sizeof(ASTNode));
     node->type = AST_STRING_LITERAL;
     node->string_literal.value = strdup(val);
     return node;
 }
+ASTNode *parse_postfix(Token **cur) {
+    ASTNode *node = parse_primary(cur);
+    while ((*cur)->kind == INC || (*cur)->kind == DEC) {
+        TokenKind op = (*cur)->kind;
+        *cur = (*cur)->next;
+        node = new_unary(op == INC ? POST_INC : POST_DEC, node);
+    }
+    return node;
+}
+
 ASTNode *parse_unary(Token **cur) {
     if ((*cur)->kind == SUB) {
         *cur = (*cur)->next;
@@ -398,7 +428,15 @@ ASTNode *parse_unary(Token **cur) {
         *cur = (*cur)->next;
         return new_unary(ASTARISK, parse_unary(cur));
     }
-    return parse_primary(cur);
+    if ((*cur)->kind == INC) {
+        *cur = (*cur)->next;
+        return new_unary(INC, parse_unary(cur));
+    }
+    if ((*cur)->kind == DEC) {
+        *cur = (*cur)->next;
+        return new_unary(DEC, parse_unary(cur));
+    }
+    return parse_postfix(cur);
 }
 ASTNode *parse_mul(Token **cur) {
     ASTNode *node = parse_unary(cur);

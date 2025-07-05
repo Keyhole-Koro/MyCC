@@ -28,6 +28,13 @@ typedef enum {
     AST_CHAR_LITERAL,
 } ASTNodeType;
 
+typedef enum {
+    TYPEMOD_NONE    = 0,
+    TYPEMOD_CONST   = 1 << 0,
+    TYPEMOD_UNSIGNED= 1 << 1,
+    TYPEMOD_SIGNED  = 1 << 2,
+} TypeModifier;
+
 typedef struct ASTNode ASTNode;
 struct ASTNode {
     ASTNodeType type;
@@ -39,6 +46,7 @@ struct ASTNode {
         struct {
             ASTNode *base_type;
             int pointer_level; // number of pointers
+            int type_modifiers; // bitmask of TypeModifier
         } type_node;
         struct {
             ASTNode *var_type;

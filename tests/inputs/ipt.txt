@@ -22,10 +22,15 @@ void set_zero(int *p) {
 
 int main() {
     int x = 1;
-    int *px = &x;
+    x++;
+    ++x;
+    x--;
+    --x;
+    int *a = 0;
+    signed int *px = &x;
     char y = 'z';
     char *py = &y;
-    int z = add(x, 2);
+    const unsigned int z = add(x, 2);
     char ch = y;
     char *str = hello_string();
 
