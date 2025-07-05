@@ -8,6 +8,7 @@ typedef enum {
     AST_IDENTIFIER,
     AST_BINARY,
     AST_TYPE,
+    AST_TYPE_ARRAY,
     AST_VAR_DECL,
     AST_ASSIGN,
     AST_UNARY,
@@ -53,6 +54,12 @@ struct ASTNode {
             char *name;
             ASTNode *init;
         } var_decl;
+        
+        struct {
+            ASTNode *element_type;
+            int array_size;
+        } type_array;
+
         struct { TokenKind op; ASTNode *operand; } unary;
         struct { ASTNode *expr; } expr_stmt;
         struct { ASTNode *cond, *then_stmt, *else_stmt; } if_stmt;
@@ -110,7 +117,7 @@ struct ASTNode {
         struct {
             char value;
         } char_literal;
-        
+
         struct { char *value; } string_literal;
     };
 };

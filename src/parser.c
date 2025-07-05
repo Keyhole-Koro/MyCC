@@ -87,6 +87,14 @@ ASTNode *new_char_literal(char value) {
     return node;
 }
 
+ASTNode *new_type_array(ASTNode *elem_type, int size) {
+    ASTNode *node = malloc(sizeof(ASTNode));
+    node->type = AST_TYPE_ARRAY;
+    node->type_array.element_type = elem_type;
+    node->type_array.array_size = size;
+    return node;
+}
+
 ASTNode *new_var_decl(ASTNode *type, char *name, ASTNode *init) {
     ASTNode *node = malloc(sizeof(ASTNode));
     node->type = AST_VAR_DECL;
@@ -150,6 +158,7 @@ ASTNode *new_assign(ASTNode *left, ASTNode *right) {
 ASTNode *new_type_node(ASTNode *base_type, int pointer_level, int modifiers) {
     ASTNode *node = malloc(sizeof(ASTNode));
     node->type = AST_TYPE;
+    printf("base type %d\n", base_type->type);
     node->type_node.base_type = base_type;
     node->type_node.pointer_level = pointer_level;
     node->type_node.type_modifiers = modifiers;
@@ -386,18 +395,16 @@ ASTNode *parse_type(Token **cur) {
     if (!is_type((*cur)->kind, *cur))
         parse_error("expected base type", token_head, *cur);
 
-    char *base_type = strdup((*cur)->value);
-    *cur = (*cur)->next;
+    ASTNode *base_type = parse_base_type(cur);
 
     int pointer_level = 0;
     while ((*cur)->kind == ASTARISK) {
         pointer_level++;
         *cur = (*cur)->next;
     }
+   return new_type_node(base_type, pointer_level, modifiers);
 
-    return new_type_node(base_type, pointer_level, modifiers);
 }
-
 
 ASTNode *new_string_literal(char *val) {
     ASTNode *node = malloc(sizeof(ASTNode));
@@ -602,19 +609,35 @@ ASTNode *parse_expr_stmt(Token **cur) {
     return new_expr_stmt(expr);
 }
 ASTNode *parse_variable_declaration(Token **cur, int need_semicolon) {
-    ASTNode *type = parse_type(cur); 
-    if ((*cur)->kind != IDENTIFIER) parse_error("expected identifier for variable name", token_head, *cur);
+    ASTNode *type = parse_type(cur);
+    if ((*cur)->kind != IDENTIFIER)
+        parse_error("expected identifier for variable name", token_head, *cur);
     char *name = (*cur)->value;
     *cur = (*cur)->next;
+
+    ASTNode *final_type = type;
+    while ((*cur)->kind == L_BRACKET) {
+        *cur = (*cur)->next;
+        int size = -1;
+        if ((*cur)->kind == NUMBER) {
+            size = atoi((*cur)->value);
+            *cur = (*cur)->next;
+        }
+        if (!expect(cur, R_BRACKET)) parse_error("expected ']' for array", token_head, *cur);
+        final_type = new_type_array(final_type, size);
+    }
+
     ASTNode *init = NULL;
     if (expect(cur, ASSIGN)) {
         init = parse_expr(cur);
     }
     if (need_semicolon) {
-        if (!expect(cur, SEMICOLON)) parse_error("expected ';' after variable declaration", token_head, *cur);
+        if (!expect(cur, SEMICOLON))
+            parse_error("expected ';' after variable declaration", token_head, *cur);
     }
-    return new_var_decl(type, name, init);
+    return new_var_decl(final_type, name, init);
 }
+
 
 ASTNode *parse_variable_assignment(Token **cur) {
     if ((*cur)->kind != IDENTIFIER) parse_error("expected identifier for assignment", token_head, *cur);
@@ -675,7 +698,6 @@ ASTNode* parse_program(Token **cur) {
     int count = 0;
     while ((*cur)->kind != EOT) {
         ASTNode *node = parse_toplevel(cur);
-        printf("Parsed node of type: %d\n", node->type);
         if (!node) parse_error("failed to parse toplevel", token_head, *cur);
         nodes = realloc(nodes, sizeof(ASTNode*) * (count+1));
         nodes[count++] = node;
@@ -701,16 +723,33 @@ void print_ast(ASTNode *node, int indent) {
             printf("Type: ");
             print_ast(node->type_node.base_type, 0);
             printf(" pointers: %d\n", node->type_node.pointer_level);
+            printf(" modifiers: %d\n", node->type_node.type_modifiers);
+            if (node->type_node.type_modifiers & TYPEMOD_CONST) printf(" const");
+            if (node->type_node.type_modifiers & TYPEMOD_UNSIGNED) printf(" unsigned");
+            if (node->type_node.type_modifiers & TYPEMOD_SIGNED) printf(" signed");
+            printf("\n");
+            break;
+
+        case AST_TYPE_ARRAY:
+            printf("TypeArray: ");
+            print_ast(node->type_array.element_type, 0);
+            printf(" size: %d\n", node->type_array.array_size);
             break;
         
         case AST_VAR_DECL:
-            printf("VarDecl: %s %s\n", node->var_decl.var_type, node->var_decl.name);
+            printf("VarDecl:\n");
+            for (int i = 0; i < indent+1; i++) printf("  ");
+            printf("Type:\n");
+            print_ast(node->var_decl.var_type, indent+2);
+            for (int i = 0; i < indent+1; i++) printf("  ");
+            printf("Name: %s\n", node->var_decl.name);
             if (node->var_decl.init) {
                 for (int i = 0; i < indent+1; i++) printf("  ");
                 printf("Init:\n");
                 print_ast(node->var_decl.init, indent+2);
             }
             break;
+        
         case AST_ASSIGN:
             printf("Assign\n");
             print_ast(node->assign.left, indent+1);
@@ -721,6 +760,16 @@ void print_ast(ASTNode *node, int indent) {
                 printf("Unary: & (address)\n");
             else if(node->unary.op == SUB)
                 printf("Unary: - (negate)\n");
+            else if(node->unary.op == INC)
+                printf("Unary: ++ (post-increment)\n");
+            else if(node->unary.op == DEC)
+                printf("Unary: -- (post-decrement)\n");
+            else if(node->unary.op == ASTARISK)
+                printf("Unary: * (dereference)\n");
+            else if(node->unary.op == POST_INC)
+                printf("Unary: ++ (pre-increment)\n");
+            else if(node->unary.op == POST_DEC)
+                printf("Unary: -- (pre-decrement)\n");
             else
                 printf("Unary: %d\n", node->unary.op);
             print_ast(node->unary.operand, indent+1);
@@ -825,6 +874,9 @@ void free_ast(ASTNode *node) {
             break;
         case AST_TYPE:
             free_ast(node->type_node.base_type);
+            free(node->type_node.base_type);
+            free(node->type_node.pointer_level);
+            free(node->type_node.type_modifiers);
             break;
         case AST_STRING_LITERAL:
             free(node->string_literal.value);

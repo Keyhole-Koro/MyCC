@@ -34,6 +34,9 @@ int main() {
     char ch = y;
     char *str = hello_string();
 
+    int arr[5];
+    int mat[10][10];
+
     print_char(ch);
     do_nothing();
 
