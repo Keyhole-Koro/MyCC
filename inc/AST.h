@@ -64,6 +64,11 @@ struct ASTNode {
             int array_size;
         } type_array;
 
+        struct {
+            ASTNode *src_type;
+            char *alias;
+        } typedef_stmt;
+        
         struct { TokenKind op; ASTNode *operand; } unary;
         struct { ASTNode *expr; } expr_stmt;
         struct { ASTNode *cond, *then_stmt, *else_stmt; } if_stmt;
@@ -96,10 +101,6 @@ struct ASTNode {
             ASTNode *inc;
             ASTNode *body;
         } for_stmt;
-        struct {
-            char *orig_type;
-            char *new_type;
-        } typedef_stmt;
         
         struct {
             char *name;

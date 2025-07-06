@@ -3,6 +3,13 @@ struct TypeTable {
     int count;
 };
 
+typedef int MyInt;
+
+typedef struct {
+    char **typenames;
+    int count;
+} TypeTable;
+
 void print_char(char c) {
 }
 

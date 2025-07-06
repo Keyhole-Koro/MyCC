@@ -171,18 +171,18 @@ ASTNode *new_expr_stmt(ASTNode *expr) {
     return node;
 }
 
-ASTNode *new_typedef(char *orig_type, char *new_type) {
+ASTNode *new_typedef(ASTNode *src_type, char *alias) {
     ASTNode *node = malloc(sizeof(ASTNode));
     node->type = AST_TYPEDEF;
-    node->typedef_stmt.orig_type = strdup(orig_type);
-    node->typedef_stmt.new_type = strdup(new_type);
+    node->typedef_stmt.src_type = src_type;
+    node->typedef_stmt.alias = strdup(alias);
     return node;
 }
 
 ASTNode *new_typedef_struct(char *struct_name, ASTNode **members, int member_count, char *typedef_name) {
     ASTNode *node = malloc(sizeof(ASTNode));
     node->type = AST_TYPEDEF_STRUCT;
-    node->typedef_struct.struct_name = strdup(struct_name);
+    node->typedef_struct.struct_name = strdup(struct_name ? struct_name : "");
     node->typedef_struct.members = members;
     node->typedef_struct.member_count = member_count;
     node->typedef_struct.typedef_name = strdup(typedef_name);
@@ -351,6 +351,7 @@ int is_type(TokenKind kind, Token *cur) {
 ASTNode *parse_expr(Token **cur);
 ASTNode *parse_variable_declaration(Token **cur, int need_semicolon);
 ASTNode *parse_struct(Token **cur);
+ASTNode *parse_type(Token **cur);
 
 ASTNode *parse_primary(Token **cur) {
 
@@ -408,34 +409,85 @@ ASTNode *parse_base_type(Token **cur) {
     *cur = (*cur)->next;
     return base;
 }
+void parse_struct_members(Token **cur, ASTNode ***members, int *member_count) {
+    *members = NULL;
+    *member_count = 0;
+    if (!expect(cur, L_BRACE)) parse_error("expected '{' in struct", token_head, *cur);
+    while ((*cur)->kind != R_BRACE) {
+        ASTNode *member = parse_variable_declaration(cur, 1);
+        *members = realloc(*members, sizeof(ASTNode*) * (*member_count + 1));
+        (*members)[(*member_count)++] = member;
+    }
+    if (!expect(cur, R_BRACE)) parse_error("expected '}' to close struct definition", token_head, *cur);
+}
 ASTNode *parse_struct(Token **cur) {
-    if (!expect(cur, STRUCT)) parse_error("expected 'struct'", token_head, *cur);
-    if ((*cur)->kind != IDENTIFIER) parse_error("expected struct name", token_head, *cur);
-    char *name = strdup((*cur)->value);
-    *cur = (*cur)->next;
+    if (!expect(cur, STRUCT))
+        parse_error("expected 'struct'", token_head, *cur);
+
+    char *name = NULL;
+    if ((*cur)->kind == IDENTIFIER) {
+        name = strdup((*cur)->value);
+        *cur = (*cur)->next;
+    }
 
     ASTNode **members = NULL;
     int member_count = 0;
-    if ((*cur)->kind == L_BRACE) {
-        *cur = (*cur)->next;
-        while ((*cur)->kind != R_BRACE) {
-            ASTNode *member = parse_variable_declaration(cur, 1);
-            members = realloc(members, sizeof(ASTNode*) * (member_count+1));
-            members[member_count++] = member;
-        }
-        if (!expect(cur, R_BRACE)) parse_error("expected '}' to close struct definition", token_head, *cur);
-        if (!expect(cur, SEMICOLON)) {
-            // If there's no semicolon, it might be a typedef struct
-            if ((*cur)->kind == TYPEDEF) {
-                *cur = (*cur)->next;
-                if (!expect(cur, SEMICOLON)) parse_error("expected ';' after typedef struct", token_head, *cur);
-                return new_typedef_struct(name, members, member_count, name);
-            }
-        }
-    }
-    add_typename(name);
 
-    return new_struct(name, members, member_count);
+    if ((*cur)->kind == L_BRACE) {
+        parse_struct_members(cur, &members, &member_count);
+        if ((*cur)->kind == IDENTIFIER) {
+            char *typedef_name = strdup((*cur)->value);
+            *cur = (*cur)->next;
+            if (!expect(cur, SEMICOLON))
+                parse_error("expected ';' after typedef struct", token_head, *cur);
+            add_typename(typedef_name);
+            return new_typedef_struct(name ? name : "", members, member_count, typedef_name);
+        }
+        if (!expect(cur, SEMICOLON))
+            parse_error("expected ';' after struct definition", token_head, *cur);
+        if (name) add_typename(name);
+        return new_struct(name ? name : "", members, member_count);
+    }
+    if (!expect(cur, SEMICOLON))
+        parse_error("expected ';' after struct declaration", token_head, *cur);
+    if (name) add_typename(name);
+    return new_struct(name ? name : "", NULL, 0);
+}
+
+ASTNode *parse_typedef(Token **cur) {
+    if (!expect(cur, TYPEDEF)) parse_error("expected 'typedef'", token_head, *cur);
+
+    if ((*cur)->kind == STRUCT) {
+        *cur = (*cur)->next;
+        char *struct_name = NULL;
+        if ((*cur)->kind == IDENTIFIER) {
+            struct_name = strdup((*cur)->value);
+            *cur = (*cur)->next;
+        }
+        ASTNode **members = NULL;
+        int member_count = 0;
+        parse_struct_members(cur, &members, &member_count);
+        // typedef struct {...} Name;
+        if ((*cur)->kind != IDENTIFIER)
+            parse_error("expected typedef name after struct definition", token_head, *cur);
+        char *typedef_name = strdup((*cur)->value);
+        *cur = (*cur)->next;
+        if (!expect(cur, SEMICOLON))
+            parse_error("expected ';' after typedef", token_head, *cur);
+        add_typename(typedef_name);
+        return new_typedef_struct(struct_name ? struct_name : "", members, member_count, typedef_name);
+    } else {
+        // typedef int MyInt;
+        ASTNode *type = parse_type(cur);
+        if ((*cur)->kind != IDENTIFIER)
+            parse_error("expected typedef name", token_head, *cur);
+        char *typedef_name = strdup((*cur)->value);
+        *cur = (*cur)->next;
+        if (!expect(cur, SEMICOLON))
+            parse_error("expected ';' after typedef", token_head, *cur);
+        add_typename(typedef_name);
+        return new_typedef(type, typedef_name);
+    }
 }
 
 
@@ -772,7 +824,7 @@ ASTNode* parse_fundef(Token **cur) {
     return fndef;
 }
 ASTNode* parse_toplevel(Token **cur) {
-    //if ((*cur)->kind == TYPEDEF) return parse_typedef(cur);
+    if ((*cur)->kind == TYPEDEF) return parse_typedef(cur);
     if ((*cur)->kind == STRUCT) return parse_struct(cur);
     if (is_type((*cur)->kind, *cur)) {
         Token *save = *cur;
@@ -911,9 +963,6 @@ void print_ast(ASTNode *node, int indent) {
     case AST_PARAM:
         INDENT; printf("Param: %s %s\n", node->param.type, node->param.name);
         break;
-    case AST_TYPEDEF:
-        INDENT; printf("Typedef: %s -> %s\n", node->typedef_stmt.orig_type, node->typedef_stmt.new_type);
-        break;
     case AST_STRUCT:
         INDENT; printf("Struct: %s\n", node->struct_stmt.name);
         for (int i = 0; i < node->struct_stmt.member_count; i++) {
@@ -921,6 +970,11 @@ void print_ast(ASTNode *node, int indent) {
                 node->struct_stmt.members[i]->struct_member.type,
                 node->struct_stmt.members[i]->struct_member.name);
         }
+        break;
+    case AST_TYPEDEF:
+        INDENT; printf("Typedef: %s\n", node->typedef_stmt.alias);
+        INDENT; printf("  BaseType:\n");
+        print_ast(node->typedef_stmt.src_type, indent+2);
         break;
     case AST_STRUCT_MEMBER:
         INDENT; printf("StructMember: %s %s\n",
@@ -1028,15 +1082,15 @@ void free_ast(ASTNode *node) {
             free(node->param.type);
             free(node->param.name);
             break;
-        case AST_TYPEDEF:
-            free(node->typedef_stmt.orig_type);
-            free(node->typedef_stmt.new_type);
-            break;
         case AST_STRUCT:
             free(node->struct_stmt.name);
             for (int i = 0; i < node->struct_stmt.member_count; i++)
                 free_ast(node->struct_stmt.members[i]);
             free(node->struct_stmt.members);
+            break;
+        case AST_TYPEDEF:
+            free(node->typedef_stmt.alias);
+            free_ast(node->typedef_stmt.src_type);
             break;
         case AST_STRUCT_MEMBER:
             free(node->struct_member.type);
