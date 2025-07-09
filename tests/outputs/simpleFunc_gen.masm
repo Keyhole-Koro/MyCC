@@ -1,0 +1,218 @@
+
+__START__:
+; prologue
+  push bp
+  mov bp, sp
+  
+; load constant 2 into r1
+  movi  r1, 2
+  
+; store r1 to var 'x'
+  mov   r2, bp
+  addis r2, -4
+  store r2, r1
+  
+; load constant 3 into r1
+  movi  r1, 3
+  
+; store r1 to var 'y'
+  mov   r2, bp
+  addis r2, -8
+  store r2, r1
+  
+; load var 'x' into r5
+  mov   r2, bp
+  addis r2, -4
+  load  r5, r2
+  
+; load var 'y' into r6
+  mov   r2, bp
+  addis r2, -8
+  load  r6, r2
+  
+; call function add
+  jmp add_f
+  
+; store r1 to var 'z'
+  mov   r2, bp
+  addis r2, -12
+  store r2, r1
+  
+; load var 'x' into r5
+  mov   r2, bp
+  addis r2, -4
+  load  r5, r2
+  
+; load var 'y' into r6
+  mov   r2, bp
+  addis r2, -8
+  load  r6, r2
+  
+; load var 'z' into r7
+  mov   r2, bp
+  addis r2, -12
+  load  r7, r2
+  
+; call function add3
+  jmp add3_f
+  
+; store r1 to var 'z'
+  mov   r2, bp
+  addis r2, -12
+  store r2, r1
+  
+; load constant 10 into r1
+  movi  r1, 10
+  push r1  
+; push argument #4
+  
+; load var 'x' into r5
+  mov   r2, bp
+  addis r2, -4
+  load  r5, r2
+  
+; load var 'y' into r6
+  mov   r2, bp
+  addis r2, -8
+  load  r6, r2
+  
+; load var 'z' into r7
+  mov   r2, bp
+  addis r2, -12
+  load  r7, r2
+  
+; call function add4
+  jmp add4_f
+  
+; store r1 to var 'z'
+  mov   r2, bp
+  addis r2, -12
+  store r2, r1
+  
+; load var 'z' into r1
+  mov   r2, bp
+  addis r2, -12
+  load  r1, r2
+  
+; return
+  halt
+add_f:
+; prologue
+  push bp
+  mov bp, sp
+  ; store parameter 'a' from register r5
+  mov   r2, bp
+  addis r2, 4
+  store r2, r5
+  ; store parameter 'b' from register r6
+  mov   r2, bp
+  addis r2, 8
+  store r2, r6
+  
+; load var 'a' into r2
+  mov   r2, bp
+  addis r2, 4
+  load  r2, r2
+  
+; load var 'b' into r1
+  mov   r2, bp
+  addis r2, 8
+  load  r1, r2
+  add  r1, r2
+  
+; return
+; epilogue
+  pop  bp
+  mov  pc, lr
+
+add3_f:
+; prologue
+  push bp
+  mov bp, sp
+  ; store parameter 'a' from register r5
+  mov   r2, bp
+  addis r2, 4
+  store r2, r5
+  ; store parameter 'b' from register r6
+  mov   r2, bp
+  addis r2, 8
+  store r2, r6
+  ; store parameter 'c' from register r7
+  mov   r2, bp
+  addis r2, 12
+  store r2, r7
+  
+; load var 'a' into r2
+  mov   r2, bp
+  addis r2, 4
+  load  r2, r2
+  
+; load var 'b' into r1
+  mov   r2, bp
+  addis r2, 8
+  load  r1, r2
+  add  r1, r2
+  mov r2, r1
+  
+; load var 'c' into r1
+  mov   r2, bp
+  addis r2, 12
+  load  r1, r2
+  add  r1, r2
+  
+; return
+; epilogue
+  pop  bp
+  mov  pc, lr
+
+add4_f:
+; prologue
+  push bp
+  mov bp, sp
+  ; store parameter 'a' from register r5
+  mov   r2, bp
+  addis r2, 4
+  store r2, r5
+  ; store parameter 'b' from register r6
+  mov   r2, bp
+  addis r2, 8
+  store r2, r6
+  ; store parameter 'c' from register r7
+  mov   r2, bp
+  addis r2, 12
+  store r2, r7
+  ; pop stack argument for parameter 'd'
+  pop   r1
+  mov   r2, bp
+  addis r2, 16
+  store r2, r1
+  
+; load var 'a' into r2
+  mov   r2, bp
+  addis r2, 4
+  load  r2, r2
+  
+; load var 'b' into r1
+  mov   r2, bp
+  addis r2, 8
+  load  r1, r2
+  add  r1, r2
+  mov r2, r1
+  
+; load var 'c' into r1
+  mov   r2, bp
+  addis r2, 12
+  load  r1, r2
+  add  r1, r2
+  mov r2, r1
+  
+; load var 'd' into r1
+  mov   r2, bp
+  addis r2, 16
+  load  r1, r2
+  add  r1, r2
+  
+; return
+; epilogue
+  pop  bp
+  mov  pc, lr

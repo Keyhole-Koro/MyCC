@@ -1,6 +1,8 @@
 #include "unity.h"
 #include "../inc/lexer.h"
 #include "../inc/parser.h"
+#include "../inc/codegen.h"
+#include "../utils.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,49 +10,26 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-char *readSampleInput(const char *filePath) {
-    FILE *file = fopen(filePath, "r");
-    if (!file) {
-        perror("Failed to open file");
-        return NULL;
-    }
-
-    fseek(file, 0, SEEK_END);
-    long fileSize = ftell(file);
-    rewind(file);
-
-    char *buffer = malloc(fileSize + 1);
-    if (!buffer) {
-        perror("Failed to allocate memory");
-        fclose(file);
-        return NULL;
-    }
-
-    fread(buffer, 1, fileSize, file);
-    buffer[fileSize] = '\0';
-    fclose(file);
-    return buffer;
-}
-
-void test_lexer_processes_sample_input(void) {
-    char *input = readSampleInput("tests/inputs/ipt.txt");
+void test_codegen_from_simpleFunc(void) {
+    char *input = readSampleInput("tests/inputs/simpleFunc.c");
+    TEST_ASSERT_NOT_NULL(input);
 
     Token *tokens = lexer(input);
     free(input);
-
-    for (Token *cur = tokens; cur != NULL; cur = cur->next) {
-        printf("Token kind: %s, value: %s\n", tokenkind2str(cur->kind), cur->value);
-    }
 
     Token *cur = tokens;
     ASTNode *root = parse_program(&cur);
 
     print_ast(root, 0);
 
+    char *output = codegen(root);
+
+    saveOutput("tests/outputs/simpleFunc_gen.masm", output);
+    free(output);
 }
 
 int main(void) {
     UNITY_BEGIN();
-    RUN_TEST(test_lexer_processes_sample_input);
+    RUN_TEST(test_codegen_from_simpleFunc);
     return UNITY_END();
 }
