@@ -2,7 +2,7 @@
 #include "../inc/lexer.h"
 #include "../inc/parser.h"
 #include "../inc/codegen.h"
-#include "../utils.h"
+#include "../inc/utils.h"
 
 #include <stdio.h>
 #include <stdlib.h>

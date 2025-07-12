@@ -25,10 +25,18 @@ int main(int argc, char *argv[]) {
     ASTNode *root = parse_program(&cur);
 
     print_ast(root, 0);
+    printf("AST parsing completed.\n");
 
     char *output = codegen(root);
 
+    if (!output) {
+        fprintf(stderr, "Code generation failed.\n");
+        return 1;
+    }
     saveOutput(output_path, output);
+    
+    printf("Code generation completed. Output saved to %s\n", output_path);
+    
     free(output);
 
     return 0;

@@ -9,7 +9,7 @@ static const char *arg_regs[] = { "r5", "r6", "r7" };
 #define SLOT_SIZE 4
 
 // Get offset for parameter n (first param: n=0 → bp+4)
-static int param_offset(int n) { return -SLOT_SIZE * (n+1); }
+static int param_offset(int n) { return -(4 + n * SLOT_SIZE); }
 // Get offset for local n (first local: n=0 → bp-4)
 static int local_offset(int n) { return -SLOT_SIZE * (n+1); }
 
@@ -53,12 +53,34 @@ int find_var_offset(const char *name, char **params, int param_count,
 
 // Emit code to load variable (param/local/global) to target_reg
 void emit_load_var(StringBuilder *sb, const char *name, const char *target_reg,
-                   char **params, int param_count,
-                   char **locals, int local_count) {
+    char **params, int param_count,
+    char **locals, int local_count) {
     int is_param = 0;
-    int offset = find_var_offset(name, params, param_count, locals, local_count, &is_param);
-    if (is_param == 1 || is_param == 0) {
-        sb_append(sb, "  \n; load var '%s' into %s\n", name, target_reg);
+    int idx = param_index(name, params, param_count);
+    int offset;
+    if (idx >= 0) {
+    is_param = 1;
+    if (idx < 3) {
+    // bp-4, bp-8, bp-12…
+        offset = -(4 + idx * SLOT_SIZE);
+        sb_append(sb, "  \n; load param '%s' (arg%d, reg) into %s\n", name, idx+1, target_reg);
+        sb_append(sb, "  mov   r3, bp\n");
+        sb_append(sb, "  addis r3, %d\n", offset);
+        sb_append(sb, "  load  %s, r3\n", target_reg);
+    } else {
+    // bp+N
+        offset = 4 + (idx - 3) * SLOT_SIZE;
+        sb_append(sb, "  \n; load param '%s' (arg%d, stack) into %s\n", name, idx+1, target_reg);
+        sb_append(sb, "  mov   r3, bp\n");
+        sb_append(sb, "  addis r3, %d\n", offset);
+        sb_append(sb, "  load  %s, r3\n", target_reg);
+    }
+    } else {
+        int local_idx = local_index(name, locals, local_count);
+        if (local_idx >= 0) {
+        // bp-4, bp-8, ...
+        offset = -SLOT_SIZE * (local_idx + 1);
+        sb_append(sb, "  \n; load local '%s' into %s\n", name, target_reg);
         sb_append(sb, "  mov   r3, bp\n");
         sb_append(sb, "  addis r3, %d\n", offset);
         sb_append(sb, "  load  %s, r3\n", target_reg);
@@ -67,7 +89,9 @@ void emit_load_var(StringBuilder *sb, const char *name, const char *target_reg,
         sb_append(sb, "  movi  r2, %s\n", name);
         sb_append(sb, "  load  %s, r2\n", target_reg);
     }
+    }
 }
+
 
 // Emit code to store target_reg to variable (param/local/global)
 void emit_store_var(StringBuilder *sb, const char *name, const char *src_reg,
@@ -99,34 +123,129 @@ void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
     gen_expr(node->binary.left, sb, "r2", params, param_count, locals, local_count);
     gen_expr(node->binary.right, sb, "r1", params, param_count, locals, local_count);
     switch (node->binary.op) {
-        case ADD:      sb_append(sb, "  add  r1, r2\n"); break;
-        case SUB:      sb_append(sb, "  sub  r1, r2\n"); break;
-        case ASTARISK: sb_append(sb, "  mcp  r1, r2\n"); break;
-        case DIV:      sb_append(sb, "  div  r1, r2\n"); break;
+        case ADD:      sb_append(sb, "\n; addition\n  add  r1, r2\n"); break;
+        case SUB:      sb_append(sb, "\n; subtraction\n  sub  r1, r2\n"); break;
+        //case ASTARISK: sb_append(sb, "  mcp  r1, r2\n"); break;
+        //case DIV:      sb_append(sb, "  div  r1, r2\n"); break;
         default:       sb_append(sb, "  \n; unknown binary op\n");
     }
     if (strcmp(target_reg, "r1") != 0)
         sb_append(sb, "  mov %s, r1\n", target_reg);
 }
 
-// Function call: up to 3 args (r5/r6/r7), 4th+ push stack (right to left)
+
 void gen_call(ASTNode *node, StringBuilder *sb, const char *target_reg,
-              char **params, int param_count, char **locals, int local_count) {
+    char **params, int param_count, char **locals, int local_count) {
     int argc = node->call.arg_count;
-    // 4th+ args are pushed (right to left)
-    for (int i = argc - 1; i >= 3; i--) {
-        gen_expr(node->call.args[i], sb, "r1", params, param_count, locals, local_count);
-        sb_append(sb, "; push argument #%d\n  push r1  \n", i+1);
+
+    // Allocate space for stack-passed arguments (4th and beyond)
+    if (argc > 3) {
+        sb_append(sb, "  ; allocate stack space for stack arguments\n");
+        for (int i = 3; i < argc; i++) {
+            gen_expr(node->call.args[i], sb, "r1", params, param_count, locals, local_count);
+            sb_append(sb, "  mov r2, sp\n");
+            sb_append(sb, "  addis r2, %d\n", (i - 3) * SLOT_SIZE);
+            sb_append(sb, "  store r2, r1\n"); // Store the argument value at [sp + offset]
+            }
     }
-    // r5/r6/r7 for first three args (left to right)
+
+    // Pass the first 3 arguments via registers r5, r6, r7 (left to right)
     for (int i = 0; i < argc && i < 3; i++) {
         gen_expr(node->call.args[i], sb, arg_regs[i], params, param_count, locals, local_count);
     }
-    sb_append(sb, "  \n; call function %s\n", node->call.name);
-    sb_append(sb, "  jmp %s_f\n", node->call.name);
-    // result: assume in r1
+
+    sb_append(sb, "  call f_%s\n", node->call.name);
+
+    // After call, restore stack pointer
+    if (argc > 3) {
+        sb_append(sb, "  ; restore sp after call\n");
+        sb_append(sb, "  addis sp, %d\n", (argc - 3) * SLOT_SIZE);
+    }
+
+    // Move return value to target register if needed
     if (strcmp(target_reg, "r1") != 0)
-        sb_append(sb, "  mov %s, r1\n", target_reg);
+    sb_append(sb, "  mov %s, r1\n", target_reg);
+}
+
+// Generate assembly for an if-statement node
+void gen_if(ASTNode *node, StringBuilder *sb,
+    char **params, int param_count,
+    char **locals, int local_count)
+{
+    // Unique label id for this if statement
+    static int label_count = 0;
+    int cur_label = label_count++;
+
+    // Prepare label strings
+    char then_label[32], else_label[32], end_label[32];
+    snprintf(then_label, sizeof(then_label), "b_L_then_%d", cur_label);
+    snprintf(end_label,  sizeof(end_label),  "b_L_end_%d",  cur_label);
+
+    if (node->if_stmt.else_stmt)
+        snprintf(else_label, sizeof(else_label), "b_L_else_%d", cur_label);
+    else
+        strcpy(else_label, end_label); // No else: jump directly to end
+
+    ASTNode *cond = node->if_stmt.cond;
+
+    // Condition is a binary operation
+    if (cond->type == AST_BINARY) {
+        gen_expr(cond->binary.left, sb, "r2", params, param_count, locals, local_count);
+        gen_expr(cond->binary.right, sb, "r3", params, param_count, locals, local_count);
+        sb_append(sb, "  cmp r2, r3\n");
+
+        // Output branch instructions according to operator and presence of else
+        switch (cond->binary.op) {
+            case EQ:  // ==
+                sb_append(sb, "  jz %s\n", then_label);
+                sb_append(sb, "  jmp %s\n", else_label);
+                break;
+            case NEQ: // !=
+                sb_append(sb, "  jnz %s\n", then_label);
+                sb_append(sb, "  jmp %s\n", else_label);
+                break;
+            case LT:  // <
+                sb_append(sb, "  jl %s\n", then_label);
+                sb_append(sb, "  jmp %s\n", else_label);
+                break;
+            case GT:  // >
+                sb_append(sb, "  jg %s\n", then_label);
+                sb_append(sb, "  jmp %s\n", else_label);
+                break;
+            case LTE: // <=
+                sb_append(sb, "  jg %s\n", else_label);   // a > b: jump to else
+                sb_append(sb, "  jmp %s\n", then_label);  // else: then
+                break;
+            case GTE: // >=
+                sb_append(sb, "  jl %s\n", else_label);   // a < b: jump to else
+                sb_append(sb, "  jmp %s\n", then_label);  // else: then
+                break;
+            default:
+                sb_append(sb, "  jz %s\n", else_label);
+                sb_append(sb, "  jmp %s\n", then_label);
+                break;
+        }
+    } else {
+        // General case: treat cond as a value, jump if nonzero
+        gen_expr(cond, sb, "r1", params, param_count, locals, local_count);
+        sb_append(sb, "  cmp r1, 0\n");
+        sb_append(sb, "  jnz %s\n", then_label);
+        sb_append(sb, "  jmp %s\n", else_label);
+    }
+
+    // "then" block
+    sb_append(sb, "%s:\n", then_label);
+    gen_stmt(node->if_stmt.then_stmt, sb, params, param_count, locals, local_count);
+    sb_append(sb, "  jmp %s\n", end_label);
+
+    // "else" block (only if present)
+    if (node->if_stmt.else_stmt) {
+        sb_append(sb, "%s:\n", else_label);
+        gen_stmt(node->if_stmt.else_stmt, sb, params, param_count, locals, local_count);
+    }
+
+    // End label
+    sb_append(sb, "%s:\n", end_label);
 }
 
 void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
@@ -156,6 +275,7 @@ void gen_stmt(ASTNode *node, StringBuilder *sb,
               char **params, int param_count,
               char **locals, int local_count) {
     switch (node->type) {
+        printf("gen_stmt: processing node type %d\n", node->type);
         case AST_VAR_DECL:
             if (node->var_decl.init) {
                 gen_expr(node->var_decl.init, sb, "r1", params, param_count, locals, local_count);
@@ -168,6 +288,9 @@ void gen_stmt(ASTNode *node, StringBuilder *sb,
             break;
         case AST_EXPR_STMT:
             gen_expr(node->expr_stmt.expr, sb, "r1", params, param_count, locals, local_count);
+            break;
+        case AST_IF:
+            gen_if(node, sb, params, param_count, locals, local_count);
             break;
         case AST_RETURN:
             gen_expr(node->ret.expr, sb, "r1", params, param_count, locals, local_count);
@@ -184,11 +307,9 @@ void gen_stmt(ASTNode *node, StringBuilder *sb,
     }
 }
 
-// Top-level: function codegen
 void gen_func(ASTNode *node, StringBuilder *sb) {
     if (node->type != AST_FUNDEF) return;
 
-    // Determine function label ("__START__" for main, otherwise <name>_f)
     char *fname = strcmp(node->fundef.name, "main") == 0 ? "__START__" : node->fundef.name;
     int param_count = node->fundef.param_count;
     char *params[16] = {0};
@@ -200,34 +321,33 @@ void gen_func(ASTNode *node, StringBuilder *sb) {
     int local_count = collect_locals(node->fundef.body, locals);
 
     sb_append(sb, "\n");
-    sb_append(sb, "%s%s:\n", fname, strcmp(fname, "__START__") == 0 ? "" : "_f");
-    sb_append(sb, "; prologue\n  push bp\n  mov bp, sp\n");
+    sb_append(sb, "%s%s:\n", strcmp(fname, "__START__") == 0 ? "" : "f_", fname);
+    sb_append(sb, "; prologue\n");
+    sb_append(sb, "  push bp\n");
+    sb_append(sb, "  mov bp, sp\n  addis sp, -%d\n",
+        (local_count+param_count) * SLOT_SIZE);
 
-    // Store up to first 3 parameters from r5/r6/r7
-    static const char *arg_regs[] = { "r5", "r6", "r7" };
+    // Store first 3 parameters from registers to stack frame
     for (int i = 0; i < param_count && i < 3; i++) {
         sb_append(sb, "  ; store parameter '%s' from register %s\n", params[i], arg_regs[i]);
         sb_append(sb, "  mov   r3, bp\n");
         sb_append(sb, "  addis r3, %d\n", param_offset(i));
         sb_append(sb, "  store r3, %s\n", arg_regs[i]);
     }
-    // For parameters 4,5,...: pop from stack and store to frame
-    for (int i = 3; i < param_count; i++) {
-        sb_append(sb, "  ; store stack argument for parameter '%s'\n", params[i]);
-        sb_append(sb, "  mov   r3, bp\n");
-        sb_append(sb, "  addis r3, %d\n", param_offset(i));
-        sb_append(sb, "  store r3, r1\n");
-    }
+    // For parameters 4 and above: nothing is needed; they are already in [bp+offset] positions
 
-    // Generate function body
+    // Function body
     gen_stmt(node->fundef.body, sb, params, param_count, locals, local_count);
 
+    sb_append(sb, "  addis sp, %d\n", (local_count + param_count) * SLOT_SIZE);
+    sb_append(sb, "; epilogue\n  pop  bp\n");
+
+    // Epilogue (not for main)
+    if (strcmp(fname, "__START__") != 0) {
+        sb_append(sb, "  mov  pc, lr\n");
+    }
     if (strcmp(fname, "__START__") == 0) sb_append(sb, "  halt");
 
-    // Epilogue (do not emit for main/__START__)
-    if (strcmp(fname, "__START__") != 0) {
-        sb_append(sb, "; epilogue\n  pop  bp\n  mov  pc, lr\n");
-    }
 }
 
 char *codegen(ASTNode *root) {
