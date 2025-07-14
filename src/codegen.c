@@ -30,6 +30,16 @@ static int local_index(const char *name, char **locals, int local_count)
     return -1;
 }
 
+void gen_stmt(ASTNode *node, StringBuilder *sb,
+    char **params, int param_count,
+    char **locals, int local_count);
+
+static void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
+    char **params, int param_count,
+    char **locals, int local_count,
+    const char *break_label,
+    const char *continue_label);
+
 // Recursively collect all local variable names in the block and its nested statements
 int collect_locals(ASTNode *node, char **locals)
 {
@@ -333,8 +343,10 @@ void gen_call(ASTNode *node, StringBuilder *sb, const char *target_reg,
 }
 
 void gen_if(ASTNode *node, StringBuilder *sb,
-            char **params, int param_count,
-            char **locals, int local_count)
+    char **params, int param_count,
+    char **locals, int local_count,
+    const char *break_label,
+    const char *continue_label)
 {
     static int label_count = 0;
     int cur_label = label_count++;
@@ -365,19 +377,24 @@ void gen_if(ASTNode *node, StringBuilder *sb,
     }
 
     sb_append(sb, "%s:\n", then_label);
-    gen_stmt(node->if_stmt.then_stmt, sb, params, param_count, locals, local_count);
+    gen_stmt_internal(node->if_stmt.then_stmt, sb, params, param_count, locals, local_count,
+        break_label, continue_label);
     sb_append(sb, "  jmp %s\n", end_label);
 
     if (node->if_stmt.else_stmt)
     {
         sb_append(sb, "%s:\n", else_label);
-        gen_stmt(node->if_stmt.else_stmt, sb, params, param_count, locals, local_count);
+        gen_stmt_internal(node->if_stmt.else_stmt, sb, params, param_count, locals, local_count,
+            break_label, continue_label);
     }
     sb_append(sb, "%s:\n", end_label);
 }
 void gen_for(ASTNode *node, StringBuilder *sb,
-             char **params, int param_count,
-             char **locals, int local_count)
+    char **params, int param_count,
+    char **locals, int local_count,
+    const char *break_label,
+    const char *continue_label)
+
 {
     static int label_count = 0;
     int cur_label = label_count++;
@@ -412,7 +429,8 @@ void gen_for(ASTNode *node, StringBuilder *sb,
     }
 
     sb_append(sb, "%s:\n", for_body);
-    gen_stmt(node->for_stmt.body, sb, params, param_count, locals, local_count);
+    gen_stmt_internal(node->for_stmt.body, sb, params, param_count, locals, local_count,
+        for_end, for_inc);
 
     sb_append(sb, "%s:\n", for_inc);
     if (node->for_stmt.inc)
@@ -433,21 +451,25 @@ void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
         sb_append(sb, "  movi  %s, %s\n", target_reg, node->number.value);
         break;
     case AST_UNARY:
-        switch (node->unary.op) {
+        switch (node->unary.op)
+        {
         case ASTARISK: // *
             gen_expr(node->unary.operand, sb, "r3", params, param_count, locals, local_count);
             sb_append(sb, "  ; dereference *expr\n");
             sb_append(sb, "  load %s, r3\n", target_reg);
             break;
         case AMPERSAND: // &
-            if (node->unary.operand->type == AST_IDENTIFIER) {
+            if (node->unary.operand->type == AST_IDENTIFIER)
+            {
                 const char *var_name = node->unary.operand->identifier.name;
                 int is_param;
                 int offset = find_var_offset(var_name, params, param_count, locals, local_count, &is_param);
                 sb_append(sb, "  ; address-of &%s\n", var_name);
                 sb_append(sb, "  mov %s, bp\n", target_reg);
                 sb_append(sb, "  addis %s, %d\n", target_reg, offset);
-            } else {
+            }
+            else
+            {
                 sb_append(sb, "  ; & of non-identifier not supported\n");
                 exit(1);
             }
@@ -456,7 +478,7 @@ void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
             emit_unary_inc_dec(node, sb, target_reg, params, param_count, locals, local_count);
         }
         break;
-    
+
     case AST_IDENTIFIER:
         emit_load_var(sb, node->identifier.name, target_reg, params, param_count, locals, local_count);
         break;
@@ -472,10 +494,20 @@ void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
     }
 }
 
-// Statement codegen
 void gen_stmt(ASTNode *node, StringBuilder *sb,
               char **params, int param_count,
               char **locals, int local_count)
+{
+    gen_stmt_internal(node, sb, params, param_count, locals, local_count,
+                      NULL, NULL);
+}
+
+// Statement codegen
+void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
+                       char **params, int param_count,
+                       char **locals, int local_count,
+                       const char *break_label,
+                       const char *continue_label)
 {
     switch (node->type)
     {
@@ -491,26 +523,41 @@ void gen_stmt(ASTNode *node, StringBuilder *sb,
         emit_unary_inc_dec(node, sb, "r1", params, param_count, locals, local_count);
         break;
     case AST_ASSIGN:
-        if (node->assign.left->type == AST_UNARY && node->assign.left->unary.op == ASTARISK) {
+        if (node->assign.left->type == AST_UNARY && node->assign.left->unary.op == ASTARISK)
+        {
             // *p = val
             gen_expr(node->assign.left->unary.operand, sb, "r3", params, param_count, locals, local_count); // r3 = addr
-            gen_expr(node->assign.right, sb, "r1", params, param_count, locals, local_count); // r1 = value
+            gen_expr(node->assign.right, sb, "r1", params, param_count, locals, local_count);               // r1 = value
             sb_append(sb, "  ; *ptr = value\n");
             sb_append(sb, "  store r3, r1\n");
-        } else {
+        }
+        else
+        {
             gen_expr(node->assign.right, sb, "r1", params, param_count, locals, local_count);
             emit_store_var(sb, node->assign.left->identifier.name, "r1", params, param_count, locals, local_count);
         }
         break;
-    
+    case AST_BREAK:
+        if (break_label)
+            sb_append(sb, "  jmp %s\n", break_label);
+        else
+            sb_append(sb, "  ; error: break used outside loop\n");
+        break;
+    case AST_CONTINUE:
+        if (continue_label)
+            sb_append(sb, "  jmp %s\n", continue_label);
+        else
+            sb_append(sb, "  ; error: continue used outside loop\n");
+        break;
     case AST_EXPR_STMT:
         gen_expr(node->expr_stmt.expr, sb, "r1", params, param_count, locals, local_count);
         break;
     case AST_IF:
-        gen_if(node, sb, params, param_count, locals, local_count);
+        gen_if(node, sb, params, param_count, locals, local_count, break_label, continue_label);
         break;
     case AST_FOR:
-        gen_for(node, sb, params, param_count, locals, local_count);
+        gen_for(node, sb, params, param_count, locals, local_count,
+                break_label, continue_label);
         break;
     case AST_RETURN:
         gen_expr(node->ret.expr, sb, "r1", params, param_count, locals, local_count);
@@ -520,7 +567,8 @@ void gen_stmt(ASTNode *node, StringBuilder *sb,
     case AST_BLOCK:
         for (int i = 0; i < node->block.count; i++)
         {
-            gen_stmt(node->block.stmts[i], sb, params, param_count, locals, local_count);
+            gen_stmt_internal(node->block.stmts[i], sb, params, param_count, locals, local_count,
+                                 break_label, continue_label);
         }
         break;
     default:
