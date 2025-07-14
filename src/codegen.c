@@ -123,6 +123,7 @@ void emit_unary_inc_dec(ASTNode *node, StringBuilder *sb, const char *target_reg
     else
     {
         sb_append(sb, "  ; unknown unary op\n");
+        exit(1);
         return;
     }
 
@@ -287,6 +288,7 @@ void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
     // case DIV:      sb_append(sb, "  div  r1, r2\n"); break;
     default:
         sb_append(sb, "  \n; unknown binary op\n");
+        exit(1);
     }
     if (strcmp(target_reg, "r1") != 0)
         sb_append(sb, "  mov %s, r1\n", target_reg);
@@ -431,8 +433,30 @@ void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
         sb_append(sb, "  movi  %s, %s\n", target_reg, node->number.value);
         break;
     case AST_UNARY:
-        emit_unary_inc_dec(node, sb, target_reg, params, param_count, locals, local_count);
+        switch (node->unary.op) {
+        case ASTARISK: // *
+            gen_expr(node->unary.operand, sb, "r3", params, param_count, locals, local_count);
+            sb_append(sb, "  ; dereference *expr\n");
+            sb_append(sb, "  load %s, r3\n", target_reg);
+            break;
+        case AMPERSAND: // &
+            if (node->unary.operand->type == AST_IDENTIFIER) {
+                const char *var_name = node->unary.operand->identifier.name;
+                int is_param;
+                int offset = find_var_offset(var_name, params, param_count, locals, local_count, &is_param);
+                sb_append(sb, "  ; address-of &%s\n", var_name);
+                sb_append(sb, "  mov %s, bp\n", target_reg);
+                sb_append(sb, "  addis %s, %d\n", target_reg, offset);
+            } else {
+                sb_append(sb, "  ; & of non-identifier not supported\n");
+                exit(1);
+            }
+            break;
+        default:
+            emit_unary_inc_dec(node, sb, target_reg, params, param_count, locals, local_count);
+        }
         break;
+    
     case AST_IDENTIFIER:
         emit_load_var(sb, node->identifier.name, target_reg, params, param_count, locals, local_count);
         break;
@@ -444,6 +468,7 @@ void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
         break;
     default:
         sb_append(sb, "  \n; unknown expr node %d\n", node->type);
+        exit(1);
     }
 }
 
@@ -466,9 +491,18 @@ void gen_stmt(ASTNode *node, StringBuilder *sb,
         emit_unary_inc_dec(node, sb, "r1", params, param_count, locals, local_count);
         break;
     case AST_ASSIGN:
-        gen_expr(node->assign.right, sb, "r1", params, param_count, locals, local_count);
-        emit_store_var(sb, node->assign.left->identifier.name, "r1", params, param_count, locals, local_count);
+        if (node->assign.left->type == AST_UNARY && node->assign.left->unary.op == ASTARISK) {
+            // *p = val
+            gen_expr(node->assign.left->unary.operand, sb, "r3", params, param_count, locals, local_count); // r3 = addr
+            gen_expr(node->assign.right, sb, "r1", params, param_count, locals, local_count); // r1 = value
+            sb_append(sb, "  ; *ptr = value\n");
+            sb_append(sb, "  store r3, r1\n");
+        } else {
+            gen_expr(node->assign.right, sb, "r1", params, param_count, locals, local_count);
+            emit_store_var(sb, node->assign.left->identifier.name, "r1", params, param_count, locals, local_count);
+        }
         break;
+    
     case AST_EXPR_STMT:
         gen_expr(node->expr_stmt.expr, sb, "r1", params, param_count, locals, local_count);
         break;
@@ -491,6 +525,7 @@ void gen_stmt(ASTNode *node, StringBuilder *sb,
         break;
     default:
         sb_append(sb, "  \n; [stmt] unknown node type: %d\n", node->type);
+        exit(1);
     }
 }
 
