@@ -93,6 +93,47 @@ int find_var_offset(const char *name, char **params, int param_count,
     return 0;
 }
 
+void emit_unary_inc_dec(ASTNode *node, StringBuilder *sb, const char *target_reg,
+                        char **params, int param_count,
+                        char **locals, int local_count)
+{
+    if (!node || node->type != AST_UNARY || node->unary.operand->type != AST_IDENTIFIER)
+    {
+        sb_append(sb, "  ; unsupported unary operation\n");
+        return;
+    }
+
+    const char *var_name = node->unary.operand->identifier.name;
+
+    // Load the current value
+    emit_load_var(sb, var_name, "r1", params, param_count, locals, local_count);
+
+    if (node->unary.op == POST_INC || node->unary.op == INC)
+    {
+        sb_append(sb, "  \n; increment variable '%s'\n", var_name);
+        // Increment r1 by 1
+        sb_append(sb, "  addis r1, 1\n");
+    }
+    else if (node->unary.op == POST_DEC || node->unary.op == DEC)
+    {
+        sb_append(sb, "  \n; decrement variable '%s'\n", var_name);
+        // Decrement r1 by 1
+        sb_append(sb, "  addis r1, -1\n");
+    }
+    else
+    {
+        sb_append(sb, "  ; unknown unary op\n");
+        return;
+    }
+
+    // Store back to variable
+    emit_store_var(sb, var_name, "r1", params, param_count, locals, local_count);
+
+    // Move result to target register if needed
+    if (strcmp(target_reg, "r1") != 0)
+        sb_append(sb, "  mov %s, r1\n", target_reg);
+}
+
 // Emit code to load variable (param/local/global) to target_reg
 void emit_load_var(StringBuilder *sb, const char *name, const char *target_reg,
                    char **params, int param_count,
@@ -241,6 +282,7 @@ void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
     case SUB:
         sb_append(sb, "\n; subtraction\n  sub  r1, r2\n");
         break;
+
     // case ASTARISK: sb_append(sb, "  mcp  r1, r2\n"); break;
     // case DIV:      sb_append(sb, "  div  r1, r2\n"); break;
     default:
@@ -388,6 +430,9 @@ void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
         sb_append(sb, "  \n; load constant %s into %s\n", node->number.value, target_reg);
         sb_append(sb, "  movi  %s, %s\n", target_reg, node->number.value);
         break;
+    case AST_UNARY:
+        emit_unary_inc_dec(node, sb, target_reg, params, param_count, locals, local_count);
+        break;
     case AST_IDENTIFIER:
         emit_load_var(sb, node->identifier.name, target_reg, params, param_count, locals, local_count);
         break;
@@ -416,6 +461,9 @@ void gen_stmt(ASTNode *node, StringBuilder *sb,
             gen_expr(node->var_decl.init, sb, "r1", params, param_count, locals, local_count);
             emit_store_var(sb, node->var_decl.name, "r1", params, param_count, locals, local_count);
         }
+        break;
+    case AST_UNARY:
+        emit_unary_inc_dec(node, sb, "r1", params, param_count, locals, local_count);
         break;
     case AST_ASSIGN:
         gen_expr(node->assign.right, sb, "r1", params, param_count, locals, local_count);
