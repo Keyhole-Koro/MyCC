@@ -5,7 +5,7 @@
 // Argument registers for first three args
 static const char *arg_regs[] = {"r5", "r6", "r7"};
 
-// How many bytes/slot per variable? (usually 4)
+// (usually 4)
 #define SLOT_SIZE 4
 
 // Get offset for parameter n (first param: n=0 → bp+4)
@@ -278,13 +278,14 @@ void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
               char **params, int param_count,
               char **locals, int local_count);
 
-// gen binary op (result to target_reg)
+static int label_count = 0;
+
 void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
                     char **params, int param_count, char **locals, int local_count)
 {
-    // left → r2, right → r1
     gen_expr(node->binary.left, sb, "r2", params, param_count, locals, local_count);
     gen_expr(node->binary.right, sb, "r1", params, param_count, locals, local_count);
+
     switch (node->binary.op)
     {
     case ADD:
@@ -293,16 +294,42 @@ void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
     case SUB:
         sb_append(sb, "\n; subtraction\n  sub  r1, r2\n");
         break;
-
-    // case ASTARISK: sb_append(sb, "  mcp  r1, r2\n"); break;
-    // case DIV:      sb_append(sb, "  div  r1, r2\n"); break;
+    case ASTARISK:
+        sb_append(sb, "\n; multiply r2 * r1\n");
+        sb_append(sb, "  mov r4, 0      ; r4 = result\n");
+        sb_append(sb, "  mov r5, r1     ; r5 = count\n");
+        sb_append(sb, "b_mul_loop_%d:\n", label_count);
+        sb_append(sb, "  cmp r5, 0\n");
+        sb_append(sb, "  jz b_mul_end_%d\n", label_count);
+        sb_append(sb, "  add r4, r2\n");
+        sb_append(sb, "  addis r5, -1\n");
+        sb_append(sb, "  jmp b_mul_loop_%d\n", label_count);
+        sb_append(sb, "b_mul_end_%d:\n", label_count);
+        sb_append(sb, "  mov r1, r4\n");
+        label_count++;
+        break;
+    case DIV:
+        sb_append(sb, "\n; divide r2 / r1\n");
+        sb_append(sb, "  mov r4, 0      ; r4 = result (quotient)\n");
+        sb_append(sb, "b_div_loop_%d:\n", label_count);
+        sb_append(sb, "  cmp r2, r1\n");
+        sb_append(sb, "  jl b_div_end_%d\n", label_count);
+        sb_append(sb, "  sub r2, r1\n");
+        sb_append(sb, "  addis r4, 1\n");
+        sb_append(sb, "  jmp b_div_loop_%d\n", label_count);
+        sb_append(sb, "b_div_end_%d:\n", label_count);
+        sb_append(sb, "  mov r1, r4\n");
+        label_count++;
+        break;
     default:
         sb_append(sb, "  \n; unknown binary op\n");
         exit(1);
     }
+
     if (strcmp(target_reg, "r1") != 0)
         sb_append(sb, "  mov %s, r1\n", target_reg);
 }
+
 
 void gen_call(ASTNode *node, StringBuilder *sb, const char *target_reg,
               char **params, int param_count, char **locals, int local_count)
