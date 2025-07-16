@@ -24,8 +24,8 @@ typedef enum {
     BITOR,    // |
     BITXOR,   // ^
     BITNOT,   // ~
-    SHL,      // <<
-    SHR,      // >>
+    LSH,      // <<
+    RSH,      // >>
     POST_INC, // ++ (postfix)
     POST_DEC, // -- (postfix)
     INC,      // ++

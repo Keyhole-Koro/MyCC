@@ -321,6 +321,22 @@ void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
         sb_append(sb, "  mov r1, r4\n");
         label_count++;
         break;
+    case MOD:
+        sb_append(sb, "\n; modulo r2 %% r1\n");
+        sb_append(sb, "  mov r6, r2     ; r6 = dividend backup (r2)\n");
+        sb_append(sb, "  mov r4, 0      ; r4 = result (quotient)\n");
+        sb_append(sb, "b_mod_loop_%d:\n", label_count);
+        sb_append(sb, "  cmp r2, r1\n");
+        sb_append(sb, "  jl b_mod_end_%d\n", label_count);
+        sb_append(sb, "  sub r2, r1\n");
+        sb_append(sb, "  addis r4, 1\n");
+        sb_append(sb, "  jmp b_mod_loop_%d\n", label_count);
+        sb_append(sb, "b_mod_end_%d:\n", label_count);
+        sb_append(sb, "  ; r2 now contains remainder\n");
+        sb_append(sb, "  mov r1, r2\n");
+        label_count++;
+        break;
+
     default:
         sb_append(sb, "  \n; unknown binary op\n");
         exit(1);

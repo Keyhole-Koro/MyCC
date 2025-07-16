@@ -8,7 +8,7 @@
 
 StringTokenKindMap operators[] = {
     {"==", EQ}, {"!=", NEQ}, {"<=", LTE}, {">=", GTE}, {"&&", AND}, {"||", OR},
-    {"<<", SHL}, {">>", SHR}, {"++", INC}, {"--", DEC}, {"*", ASTARISK}, {"->", ARROW},
+    {"<<", LSH}, {">>", RSH}, {"++", INC}, {"--", DEC}, {"*", ASTARISK}, {"->", ARROW},
     {"+", ADD}, {"-", SUB}, {"/", DIV}, {"%", MOD}, {"=", ASSIGN},
     {"(", L_PARENTHESES}, {")", R_PARENTHESES}, {";", SEMICOLON}, {",", COMMA},
     {"{", L_BRACE}, {"}", R_BRACE}, {"[", L_BRACKET}, {"]", R_BRACKET},
@@ -35,8 +35,8 @@ char *tokenkind2str(TokenKind kind) {
         case GTE: return "GTE";
         case AND: return "AND";
         case OR: return "OR";
-        case SHL: return "SHL";
-        case SHR: return "SHR";
+        case LSH: return "LSH";
+        case RSH: return "RSH";
         case INC: return "INC";
         case DEC: return "DEC";
         case ASTARISK: return "ASTARISK";

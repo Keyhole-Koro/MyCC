@@ -576,15 +576,17 @@ ASTNode *parse_unary(Token **cur) {
     }
     return parse_postfix(cur);
 }
+
 ASTNode *parse_mul(Token **cur) {
     ASTNode *node = parse_unary(cur);
-    while ((*cur)->kind == ASTARISK || (*cur)->kind == DIV) {
+    while ((*cur)->kind == ASTARISK || (*cur)->kind == DIV || (*cur)->kind == MOD) {
         TokenKind op = (*cur)->kind;
         *cur = (*cur)->next;
         node = new_binary(op, node, parse_unary(cur));
     }
     return node;
 }
+
 ASTNode *parse_add(Token **cur) {
     ASTNode *node = parse_mul(cur);
     while ((*cur)->kind == ADD || (*cur)->kind == SUB) {
@@ -594,8 +596,25 @@ ASTNode *parse_add(Token **cur) {
     }
     return node;
 }
-ASTNode *parse_relational(Token **cur) {
+
+ASTNode *parse_shift(Token **cur) {
     ASTNode *node = parse_add(cur);
+    while (1) {
+        if ((*cur)->kind == LSH) {
+            *cur = (*cur)->next;
+            node = new_binary(LSH, node, parse_add(cur));
+        } else if ((*cur)->kind == RSH) {
+            *cur = (*cur)->next;
+            node = new_binary(RSH, node, parse_add(cur));
+        } else {
+            break;
+        }
+    }
+    return node;
+}
+
+ASTNode *parse_relational(Token **cur) {
+    ASTNode *node = parse_shift(cur);
     while (1) {
         if ((*cur)->kind == LT) {
             *cur = (*cur)->next;
