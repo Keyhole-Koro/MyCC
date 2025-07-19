@@ -16,8 +16,8 @@ typedef enum {
     GT,       // >
     LTE,      // <=
     GTE,      // >=
-    AND,      // &&
-    OR,       // ||
+    LAND,      // &&
+    LOR,       // ||
     NOT,      // !
     AMPERSAND,
     //BITAND,   // &

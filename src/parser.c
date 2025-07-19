@@ -645,8 +645,28 @@ ASTNode *parse_equality(Token **cur) {
     }
     return node;
 }
-ASTNode *parse_assign_expr(Token **cur) {
+// &&
+ASTNode *parse_logical_and(Token **cur) {
     ASTNode *node = parse_equality(cur);
+    while ((*cur)->kind == LAND) {
+        *cur = (*cur)->next;
+        node = new_binary(LAND, node, parse_equality(cur));
+    }
+    return node;
+}
+
+// ||
+ASTNode *parse_logical_or(Token **cur) {
+    ASTNode *node = parse_logical_and(cur);
+    while ((*cur)->kind == LOR) {
+        *cur = (*cur)->next;
+        node = new_binary(LOR, node, parse_logical_and(cur));
+    }
+    return node;
+}
+
+ASTNode *parse_assign_expr(Token **cur) {
+    ASTNode *node = parse_logical_or(cur);
     if ((*cur)->kind == ASSIGN) {
         *cur = (*cur)->next;
         node = new_assign(node, parse_assign_expr(cur));

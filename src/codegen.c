@@ -296,7 +296,7 @@ void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
         break;
     case ASTARISK:
         sb_append(sb, "\n; multiply r2 * r1\n");
-        sb_append(sb, "  mov r4, 0      ; r4 = result\n");
+        sb_append(sb, "  movi r4, 0      ; r4 = result\n");
         sb_append(sb, "  mov r5, r1     ; r5 = count\n");
         sb_append(sb, "b_mul_loop_%d:\n", label_count);
         sb_append(sb, "  cmp r5, 0\n");
@@ -310,7 +310,7 @@ void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
         break;
     case DIV:
         sb_append(sb, "\n; divide r2 / r1\n");
-        sb_append(sb, "  mov r4, 0      ; r4 = result (quotient)\n");
+        sb_append(sb, "  movi r4, 0      ; r4 = result (quotient)\n");
         sb_append(sb, "b_div_loop_%d:\n", label_count);
         sb_append(sb, "  cmp r2, r1\n");
         sb_append(sb, "  jl b_div_end_%d\n", label_count);
@@ -324,7 +324,7 @@ void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
     case MOD:
         sb_append(sb, "\n; modulo r2 %% r1\n");
         sb_append(sb, "  mov r6, r2     ; r6 = dividend backup (r2)\n");
-        sb_append(sb, "  mov r4, 0      ; r4 = result (quotient)\n");
+        sb_append(sb, "  movi r4, 0      ; r4 = result (quotient)\n");
         sb_append(sb, "b_mod_loop_%d:\n", label_count);
         sb_append(sb, "  cmp r2, r1\n");
         sb_append(sb, "  jl b_mod_end_%d\n", label_count);
@@ -336,6 +336,67 @@ void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
         sb_append(sb, "  mov r1, r2\n");
         label_count++;
         break;
+        
+    case LAND: {
+            int label = label_count++;
+            char label_false[32], label_end[32];
+            snprintf(label_false, sizeof(label_false), "b_land_false_%d", label);
+            snprintf(label_end, sizeof(label_end), "b_land_end_%d", label);
+    
+            // Logical AND (&&) with short-circuit evaluation
+            // Evaluate left operand
+            gen_expr(node->binary.left, sb, "r1", params, param_count, locals, local_count);
+            sb_append(sb, "  cmp r1, 0\n");
+            sb_append(sb, "  jz %s\n", label_false);  // If left is false → jump to false
+    
+            // Evaluate right operand
+            gen_expr(node->binary.right, sb, "r1", params, param_count, locals, local_count);
+            sb_append(sb, "  cmp r1, 0\n");
+            sb_append(sb, "  jz %s\n", label_false);  // If right is false → jump to false
+    
+            // Both are non-zero → result is true (1)
+            sb_append(sb, "  movi r1, 1\n");
+            sb_append(sb, "  jmp %s\n", label_end);
+    
+            // False case
+            sb_append(sb, "%s:\n", label_false);
+            sb_append(sb, "  movi r1, 0\n");
+    
+            // End label
+            sb_append(sb, "%s:\n", label_end);
+            break;
+        }
+    
+        case LOR: {
+            int label = label_count++;
+            char label_true[32], label_end[32];
+            snprintf(label_true, sizeof(label_true), "b_lor_true_%d", label);
+            snprintf(label_end, sizeof(label_end), "b_lor_end_%d", label);
+    
+            // Logical OR (||) with short-circuit evaluation
+            // Evaluate left operand
+            gen_expr(node->binary.left, sb, "r1", params, param_count, locals, local_count);
+            sb_append(sb, "  cmp r1, 0\n");
+            sb_append(sb, "  jnz %s\n", label_true);  // If left is true → jump to true
+    
+            // Evaluate right operand
+            gen_expr(node->binary.right, sb, "r1", params, param_count, locals, local_count);
+            sb_append(sb, "  cmp r1, 0\n");
+            sb_append(sb, "  jnz %s\n", label_true);  // If right is true → jump to true
+    
+            // Both are zero → result is false (0)
+            sb_append(sb, "  movi r1, 0\n");
+            sb_append(sb, "  jmp %s\n", label_end);
+    
+            // True case
+            sb_append(sb, "%s:\n", label_true);
+            sb_append(sb, "  movi r1, 1\n");
+    
+            // End label
+            sb_append(sb, "%s:\n", label_end);
+            break;
+        }
+    
 
     default:
         sb_append(sb, "  \n; unknown binary op\n");

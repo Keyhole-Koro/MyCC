@@ -7,7 +7,7 @@
 #include <stdio.h>
 
 StringTokenKindMap operators[] = {
-    {"==", EQ}, {"!=", NEQ}, {"<=", LTE}, {">=", GTE}, {"&&", AND}, {"||", OR},
+    {"==", EQ}, {"!=", NEQ}, {"<=", LTE}, {">=", GTE}, {"&&", LAND}, {"||", LOR},
     {"<<", LSH}, {">>", RSH}, {"++", INC}, {"--", DEC}, {"*", ASTARISK}, {"->", ARROW},
     {"+", ADD}, {"-", SUB}, {"/", DIV}, {"%", MOD}, {"=", ASSIGN},
     {"(", L_PARENTHESES}, {")", R_PARENTHESES}, {";", SEMICOLON}, {",", COMMA},
@@ -33,8 +33,8 @@ char *tokenkind2str(TokenKind kind) {
         case NEQ: return "NEQ";
         case LTE: return "LTE";
         case GTE: return "GTE";
-        case AND: return "AND";
-        case OR: return "OR";
+        case LAND: return "AND";
+        case LOR: return "OR";
         case LSH: return "LSH";
         case RSH: return "RSH";
         case INC: return "INC";
