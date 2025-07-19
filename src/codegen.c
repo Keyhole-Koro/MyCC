@@ -544,6 +544,54 @@ void gen_for(ASTNode *node, StringBuilder *sb,
     sb_append(sb, "%s:\n", for_end);
 }
 
+void gen_while(ASTNode *node, StringBuilder *sb,
+               char **params, int param_count,
+               char **locals, int local_count,
+               const char *break_label,
+               const char *continue_label)
+{
+    static int label_counter = 0;
+    int cur = label_counter++;
+
+    char cond_label[32], body_label[32], end_label[32];
+    snprintf(cond_label, sizeof(cond_label), "b_L_while_cond_%d", cur);
+    snprintf(body_label, sizeof(body_label), "b_L_while_body_%d", cur);
+    snprintf(end_label, sizeof(end_label), "b_L_while_end_%d", cur);
+
+    // condition check
+    sb_append(sb, "%s:\n", cond_label);
+
+    if (node->while_stmt.cond->type == AST_BINARY) {
+        emit_cond_jump(
+            node->while_stmt.cond->binary.left,
+            node->while_stmt.cond->binary.right,
+            node->while_stmt.cond->binary.op,
+            sb, params, param_count, locals, local_count,
+            body_label, end_label
+        );
+    } else {
+        gen_expr(node->while_stmt.cond, sb, "r1", params, param_count, locals, local_count);
+        sb_append(sb, "  cmp r1, 0\n");
+        sb_append(sb, "  jnz %s\n", body_label);
+        sb_append(sb, "  jmp %s\n", end_label);
+    }
+
+    // loop body
+    sb_append(sb, "%s:\n", body_label);
+    gen_stmt_internal(
+        node->while_stmt.body, sb,
+        params, param_count, locals, local_count,
+        end_label, cond_label
+    );
+
+    // loop back
+    sb_append(sb, "  jmp %s\n", cond_label);
+
+    // exit label
+    sb_append(sb, "%s:\n", end_label);
+}
+
+
 void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
               char **params, int param_count,
               char **locals, int local_count)
@@ -662,6 +710,10 @@ void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
     case AST_FOR:
         gen_for(node, sb, params, param_count, locals, local_count,
                 break_label, continue_label);
+        break;
+    case AST_WHILE:
+        gen_while(node, sb, params, param_count, locals, local_count,
+                  break_label, continue_label);
         break;
     case AST_RETURN:
         gen_expr(node->ret.expr, sb, "r1", params, param_count, locals, local_count);
