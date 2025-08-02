@@ -218,6 +218,17 @@ void emit_store_var(StringBuilder *sb, const char *name, const char *src_reg,
     }
 }
 
+void emit_addr_of_var(StringBuilder *sb, const char *name, const char *target_reg,
+                      char **params, int param_count, char **locals, int local_count)
+{
+    int is_param = 0;
+    int offset = find_var_offset(name, params, param_count, locals, local_count, &is_param);
+    sb_append(sb, "  \n; address of '%s'\n", name);
+    sb_append(sb, "  mov   %s, bp\n", target_reg);
+    sb_append(sb, "  addis %s, %d\n", target_reg, offset);
+}
+
+
 // Emit conditional jump based on binary comparison operator
 // If the condition is true, jump to `trueLabel`
 // If the condition is false, jump to `falseLabel` (optional)
@@ -283,8 +294,27 @@ static int label_count = 0;
 void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
                     char **params, int param_count, char **locals, int local_count)
 {
-    gen_expr(node->binary.left, sb, "r2", params, param_count, locals, local_count);
-    gen_expr(node->binary.right, sb, "r1", params, param_count, locals, local_count);
+    // --- Generate code for the left-hand operand ---
+    // If the operand is *ptr (dereference), we need to:
+    //   1. Evaluate the inner expression to get the address
+    //   2. Load the value from that address
+    if (node->binary.left->type == AST_UNARY &&
+        node->binary.left->unary.op == ASTARISK) {
+        gen_expr(node->binary.left->unary.operand, sb, "r2", params, param_count, locals, local_count);
+        sb_append(sb, "  load r2, r2\n");  // dereference
+    } else {
+        gen_expr(node->binary.left, sb, "r2", params, param_count, locals, local_count);
+    }
+
+    // --- Generate code for the right-hand operand ---
+    if (node->binary.right->type == AST_UNARY &&
+        node->binary.right->unary.op == ASTARISK) {
+        gen_expr(node->binary.right->unary.operand, sb, "r1", params, param_count, locals, local_count);
+        sb_append(sb, "  load r1, r1\n");  // dereference
+    } else {
+        gen_expr(node->binary.right, sb, "r1", params, param_count, locals, local_count);
+    }
+
 
     switch (node->binary.op)
     {
@@ -406,7 +436,6 @@ void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
     if (strcmp(target_reg, "r1") != 0)
         sb_append(sb, "  mov %s, r1\n", target_reg);
 }
-
 
 void gen_call(ASTNode *node, StringBuilder *sb, const char *target_reg,
               char **params, int param_count, char **locals, int local_count)
@@ -594,7 +623,13 @@ void gen_while(ASTNode *node, StringBuilder *sb,
 
 void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
               char **params, int param_count,
-              char **locals, int local_count)
+              char **locals, int local_count) {
+                _gen_expr(node, sb, target_reg, params, param_count, locals, local_count, 0);
+              }
+
+void _gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
+              char **params, int param_count, char **locals, int local_count,
+              int want_address)
 {
     switch (node->type)
     {
@@ -606,26 +641,26 @@ void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
         switch (node->unary.op)
         {
         case ASTARISK: // *
-            gen_expr(node->unary.operand, sb, "r3", params, param_count, locals, local_count);
-            sb_append(sb, "  ; dereference *expr\n");
-            sb_append(sb, "  load %s, r3\n", target_reg);
-            break;
-        case AMPERSAND: // &
-            if (node->unary.operand->type == AST_IDENTIFIER)
-            {
-                const char *var_name = node->unary.operand->identifier.name;
-                int is_param;
-                int offset = find_var_offset(var_name, params, param_count, locals, local_count, &is_param);
-                sb_append(sb, "  ; address-of &%s\n", var_name);
-                sb_append(sb, "  mov %s, bp\n", target_reg);
-                sb_append(sb, "  addis %s, %d\n", target_reg, offset);
+            _gen_expr(node->unary.operand, sb, "r3",
+                      params, param_count, locals, local_count,
+                      0);
+            if (!want_address) {
+                sb_append(sb, "  ; dereference *expr\n");
+                sb_append(sb, "  load %s, r3\n", target_reg);
+            } else {
+                sb_append(sb, "  mov %s, r3\n", target_reg);
             }
-            else
-            {
+            break;
+        case AMPERSAND:
+            if (node->unary.operand->type == AST_IDENTIFIER) {
+                const char *var_name = node->unary.operand->identifier.name;
+                emit_addr_of_var(sb, var_name, target_reg, params, param_count, locals, local_count);
+            } else {
                 sb_append(sb, "  ; & of non-identifier not supported\n");
                 exit(1);
             }
             break;
+
         default:
             emit_unary_inc_dec(node, sb, target_reg, params, param_count, locals, local_count);
         }
@@ -641,7 +676,7 @@ void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
         gen_call(node, sb, target_reg, params, param_count, locals, local_count);
         break;
     default:
-        sb_append(sb, "  \n; unknown expr node %d\n", node->type);
+        sb_append(sb, "  \n; unknown expr node %s\n", astType2str(node->type));
         exit(1);
     }
 }
@@ -663,7 +698,6 @@ void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
 {
     switch (node->type)
     {
-        printf("gen_stmt: processing node type %d\n", node->type);
     case AST_VAR_DECL:
         if (node->var_decl.init)
         {
@@ -675,18 +709,21 @@ void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
         emit_unary_inc_dec(node, sb, "r1", params, param_count, locals, local_count);
         break;
     case AST_ASSIGN:
-        if (node->assign.left->type == AST_UNARY && node->assign.left->unary.op == ASTARISK)
-        {
+        if (node->assign.left->type == AST_UNARY && node->assign.left->unary.op == ASTARISK) {
             // *p = val
-            gen_expr(node->assign.left->unary.operand, sb, "r3", params, param_count, locals, local_count); // r3 = addr
-            gen_expr(node->assign.right, sb, "r1", params, param_count, locals, local_count);               // r1 = value
+            _gen_expr(node->assign.left->unary.operand, sb, "r3",
+                    params, param_count, locals, local_count, 0);
+            gen_expr(node->assign.right, sb, "r1", params, param_count, locals, local_count);
             sb_append(sb, "  ; *ptr = value\n");
+            sb_append(sb, "  load r3, r3\n");
             sb_append(sb, "  store r3, r1\n");
-        }
-        else
-        {
+        } else if (node->assign.left->type == AST_IDENTIFIER) {
+
             gen_expr(node->assign.right, sb, "r1", params, param_count, locals, local_count);
             emit_store_var(sb, node->assign.left->identifier.name, "r1", params, param_count, locals, local_count);
+        } else {
+            sb_append(sb, "  ; unsupported assignment target\n");
+            exit(1);
         }
         break;
     case AST_BREAK:
@@ -702,6 +739,7 @@ void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
             sb_append(sb, "  ; error: continue used outside loop\n");
         break;
     case AST_EXPR_STMT:
+        printf("node->expr_stmt.expr->type = %s\n", astType2str(node->expr_stmt.expr->type));
         gen_expr(node->expr_stmt.expr, sb, "r1", params, param_count, locals, local_count);
         break;
     case AST_IF:
@@ -728,15 +766,15 @@ void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
         }
         break;
     default:
-        sb_append(sb, "  \n; [stmt] unknown node type: %d\n", node->type);
+        printf("gen_stmt: unknown node type %s\n", astType2str(node->type));
         exit(1);
     }
 }
 
 void gen_func(ASTNode *node, StringBuilder *sb)
 {
-    if (node->type != AST_FUNDEF)
-        return;
+
+    if (node->type != AST_FUNDEF) return;
 
     char *fname = strcmp(node->fundef.name, "main") == 0 ? "__START__" : node->fundef.name;
     int param_count = node->fundef.param_count;
@@ -764,10 +802,10 @@ void gen_func(ASTNode *node, StringBuilder *sb)
         sb_append(sb, "  addis r3, %d\n", param_offset(i));
         sb_append(sb, "  store r3, %s\n", arg_regs[i]);
     }
-    // For parameters 4 and above: nothing is needed; they are already in [bp+offset] positions
 
     // Function body
     gen_stmt(node->fundef.body, sb, params, param_count, locals, local_count);
+
 
     sb_append(sb, "  addis sp, %d\n", (local_count + param_count) * SLOT_SIZE);
     sb_append(sb, "; epilogue\n  pop  bp\n");

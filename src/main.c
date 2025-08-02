@@ -28,7 +28,7 @@ int main(int argc, char *argv[]) {
     printf("AST parsing completed.\n");
 
     char *output = codegen(root);
-
+    
     if (!output) {
         fprintf(stderr, "Code generation failed.\n");
         return 1;

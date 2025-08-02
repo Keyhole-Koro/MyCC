@@ -137,6 +137,7 @@ struct ASTNode {
     };
 };
 
-void print_ast(ASTNode *node, int indent);
+
+char *astType2str(ASTNodeType type);
 
 #endif

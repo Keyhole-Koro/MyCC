@@ -838,9 +838,21 @@ ASTNode *parse_stmt(Token **cur) {
 
     if ((*cur)->kind == L_BRACE) return parse_block(cur);
     if (is_type((*cur)->kind, *cur)) return parse_variable_declaration(cur, 1);
-    if ((*cur)->kind == IDENTIFIER && (*cur)->next && (*cur)->next->kind == ASSIGN) {
-        return parse_variable_assignment(cur);
+    if (((*cur)->kind == IDENTIFIER && (*cur)->next && (*cur)->next->kind == ASSIGN) ||
+        ((*cur)->kind == ASTARISK   && (*cur)->next)) {
+
+        ASTNode *lhs = parse_unary(cur);  // *ptr or identifier
+        if (!expect(cur, ASSIGN))
+            parse_error("expected '='", token_head, *cur);
+
+        ASTNode *rhs = parse_expr(cur);
+
+        if (!expect(cur, SEMICOLON))
+            parse_error("expected ';' after assignment", token_head, *cur);
+
+        return new_assign(lhs, rhs);
     }
+
     return parse_expr_stmt(cur);
 }
 
@@ -886,6 +898,7 @@ ASTNode* parse_program(Token **cur) {
     }
     return new_block(nodes, count);
 }
+
 void print_ast(ASTNode *node, int indent) {
     if (!node) return;
     #define INDENT for (int i = 0; i < indent; i++) printf("  ")
