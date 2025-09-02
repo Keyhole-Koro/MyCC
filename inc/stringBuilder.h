@@ -16,5 +16,6 @@ typedef struct {
 void sb_init(StringBuilder *sb);
 void sb_append(StringBuilder *sb, const char *fmt, ...);
 char *sb_dump(StringBuilder *sb);
+void sb_free(StringBuilder *sb);
 
 #endif

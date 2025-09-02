@@ -120,7 +120,7 @@ struct ASTNode {
             char *typedef_name;
         } typedef_struct;
         struct {
-            char value;
+            char *value;
         } char_literal;
 
         struct { char *value; } string_literal;

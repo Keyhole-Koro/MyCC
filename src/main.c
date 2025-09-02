@@ -19,6 +19,9 @@ int main(int argc, char *argv[]) {
     char *input = readSampleInput(input_path);
 
     Token *tokens = lexer(input);
+    for (Token *t = tokens; t; t = t->next) {
+        printf("Token: kind=%s, value=%s\n", tokenkind2str(t->kind), t->value ? t->value : "(null)");
+    }
     free(input);
 
     Token *cur = tokens;

@@ -30,7 +30,7 @@ static int local_index(const char *name, char **locals, int local_count)
     return -1;
 }
 
-void gen_stmt(ASTNode *node, StringBuilder *sb,
+static void gen_stmt(ASTNode *node, StringBuilder *sb,
     char **params, int param_count,
     char **locals, int local_count);
 
@@ -40,8 +40,47 @@ static void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
     const char *break_label,
     const char *continue_label);
 
+// Internal function prototypes (used before their definitions)
+static void emit_load_var(StringBuilder *sb, const char *name, const char *target_reg,
+                          char **params, int param_count,
+                          char **locals, int local_count);
+static void emit_store_var(StringBuilder *sb, const char *name, const char *src_reg,
+                           char **params, int param_count,
+                           char **locals, int local_count);
+static void emit_addr_of_var(StringBuilder *sb, const char *name, const char *target_reg,
+                             char **params, int param_count, char **locals, int local_count);
+static void emit_cond_jump(ASTNode *left, ASTNode *right, TokenKind op, StringBuilder *sb,
+                           char **params, int param_count, char **locals, int local_count,
+                           const char *trueLabel, const char *falseLabel);
+static void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
+                     char **params, int param_count,
+                     char **locals, int local_count);
+static void _gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
+                      char **params, int param_count,
+                      char **locals, int local_count,
+                      int load_value);
+static void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
+                           char **params, int param_count, char **locals, int local_count);
+static void gen_call(ASTNode *node, StringBuilder *sb, const char *target_reg,
+                     char **params, int param_count, char **locals, int local_count);
+static void gen_if(ASTNode *node, StringBuilder *sb,
+                   char **params, int param_count,
+                   char **locals, int local_count,
+                   const char *break_label,
+                   const char *continue_label);
+static void gen_for(ASTNode *node, StringBuilder *sb,
+                    char **params, int param_count,
+                    char **locals, int local_count,
+                    const char *break_label,
+                    const char *continue_label);
+static void gen_while(ASTNode *node, StringBuilder *sb,
+                      char **params, int param_count,
+                      char **locals, int local_count,
+                      const char *break_label,
+                      const char *continue_label);
+
 // Recursively collect all local variable names in the block and its nested statements
-int collect_locals(ASTNode *node, char **locals)
+static int collect_locals(ASTNode *node, char **locals)
 {
     int count = 0;
     if (!node)
@@ -81,7 +120,7 @@ int collect_locals(ASTNode *node, char **locals)
 }
 
 // Compute offset for a variable name
-int find_var_offset(const char *name, char **params, int param_count,
+static int find_var_offset(const char *name, char **params, int param_count,
                     char **locals, int local_count, int *is_param)
 {
     int idx = param_index(name, params, param_count);
@@ -103,7 +142,7 @@ int find_var_offset(const char *name, char **params, int param_count,
     return 0;
 }
 
-void emit_unary_inc_dec(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void emit_unary_inc_dec(ASTNode *node, StringBuilder *sb, const char *target_reg,
                         char **params, int param_count,
                         char **locals, int local_count)
 {
@@ -146,7 +185,7 @@ void emit_unary_inc_dec(ASTNode *node, StringBuilder *sb, const char *target_reg
 }
 
 // Emit code to load variable (param/local/global) to target_reg
-void emit_load_var(StringBuilder *sb, const char *name, const char *target_reg,
+static void emit_load_var(StringBuilder *sb, const char *name, const char *target_reg,
                    char **params, int param_count,
                    char **locals, int local_count)
 {
@@ -197,7 +236,7 @@ void emit_load_var(StringBuilder *sb, const char *name, const char *target_reg,
 }
 
 // Emit code to store target_reg to variable (param/local/global)
-void emit_store_var(StringBuilder *sb, const char *name, const char *src_reg,
+static void emit_store_var(StringBuilder *sb, const char *name, const char *src_reg,
                     char **params, int param_count,
                     char **locals, int local_count)
 {
@@ -218,7 +257,7 @@ void emit_store_var(StringBuilder *sb, const char *name, const char *src_reg,
     }
 }
 
-void emit_addr_of_var(StringBuilder *sb, const char *name, const char *target_reg,
+static void emit_addr_of_var(StringBuilder *sb, const char *name, const char *target_reg,
                       char **params, int param_count, char **locals, int local_count)
 {
     int is_param = 0;
@@ -233,7 +272,7 @@ void emit_addr_of_var(StringBuilder *sb, const char *name, const char *target_re
 // If the condition is true, jump to `trueLabel`
 // If the condition is false, jump to `falseLabel` (optional)
 // Supported operators: ==, !=, <, >, <=, >= using basic jz, jnz, jl, jg
-void emit_cond_jump(ASTNode *left, ASTNode *right, TokenKind op, StringBuilder *sb,
+static void emit_cond_jump(ASTNode *left, ASTNode *right, TokenKind op, StringBuilder *sb,
                     char **params, int param_count, char **locals, int local_count,
                     const char *trueLabel, const char *falseLabel)
 {
@@ -285,13 +324,13 @@ void emit_cond_jump(ASTNode *left, ASTNode *right, TokenKind op, StringBuilder *
 }
 
 // gen_expr: output result to target_reg (should be r5/r6/r7)
-void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
               char **params, int param_count,
               char **locals, int local_count);
 
 static int label_count = 0;
 
-void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
                     char **params, int param_count, char **locals, int local_count)
 {
     // --- Generate code for the left-hand operand ---
@@ -437,7 +476,7 @@ void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
         sb_append(sb, "  mov %s, r1\n", target_reg);
 }
 
-void gen_call(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void gen_call(ASTNode *node, StringBuilder *sb, const char *target_reg,
               char **params, int param_count, char **locals, int local_count)
 {
     int argc = node->call.arg_count;
@@ -475,7 +514,7 @@ void gen_call(ASTNode *node, StringBuilder *sb, const char *target_reg,
         sb_append(sb, "  mov %s, r1\n", target_reg);
 }
 
-void gen_if(ASTNode *node, StringBuilder *sb,
+static void gen_if(ASTNode *node, StringBuilder *sb,
     char **params, int param_count,
     char **locals, int local_count,
     const char *break_label,
@@ -522,7 +561,7 @@ void gen_if(ASTNode *node, StringBuilder *sb,
     }
     sb_append(sb, "%s:\n", end_label);
 }
-void gen_for(ASTNode *node, StringBuilder *sb,
+static void gen_for(ASTNode *node, StringBuilder *sb,
     char **params, int param_count,
     char **locals, int local_count,
     const char *break_label,
@@ -573,11 +612,11 @@ void gen_for(ASTNode *node, StringBuilder *sb,
     sb_append(sb, "%s:\n", for_end);
 }
 
-void gen_while(ASTNode *node, StringBuilder *sb,
-               char **params, int param_count,
-               char **locals, int local_count,
-               const char *break_label,
-               const char *continue_label)
+static void gen_while(ASTNode *node, StringBuilder *sb,
+    char **params, int param_count,
+    char **locals, int local_count,
+    const char *break_label,
+    const char *continue_label)
 {
     static int label_counter = 0;
     int cur = label_counter++;
@@ -621,13 +660,13 @@ void gen_while(ASTNode *node, StringBuilder *sb,
 }
 
 
-void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
               char **params, int param_count,
               char **locals, int local_count) {
                 _gen_expr(node, sb, target_reg, params, param_count, locals, local_count, 0);
               }
 
-void _gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void _gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
               char **params, int param_count, char **locals, int local_count,
               int want_address)
 {
@@ -681,7 +720,7 @@ void _gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
     }
 }
 
-void gen_stmt(ASTNode *node, StringBuilder *sb,
+static void gen_stmt(ASTNode *node, StringBuilder *sb,
               char **params, int param_count,
               char **locals, int local_count)
 {
@@ -690,7 +729,7 @@ void gen_stmt(ASTNode *node, StringBuilder *sb,
 }
 
 // Statement codegen
-void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
+static void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
                        char **params, int param_count,
                        char **locals, int local_count,
                        const char *break_label,
@@ -739,7 +778,6 @@ void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
             sb_append(sb, "  ; error: continue used outside loop\n");
         break;
     case AST_EXPR_STMT:
-        printf("node->expr_stmt.expr->type = %s\n", astType2str(node->expr_stmt.expr->type));
         gen_expr(node->expr_stmt.expr, sb, "r1", params, param_count, locals, local_count);
         break;
     case AST_IF:

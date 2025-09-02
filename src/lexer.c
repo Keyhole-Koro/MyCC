@@ -196,19 +196,35 @@ bool isStringLiteral(char *ptr, char *buffer) {
     return true;
 }
 
-bool isCharLiteral(char *ptr, char *buffer) {
-    if (*ptr != '\'') return false;
-    char *start = ptr++;
-    if (*ptr == '\\') ptr++;
-    if (*ptr) ptr++;
-    if (*ptr != '\'') return false;
-    ptr++;
-    size_t len = ptr - start;
-    strncpy(buffer, start, len);
-    buffer[len] = '\0';
-    return true;
-}
+int isCharLiteral(char *ptr, char *buffer) {
+    if (*ptr != '\'') return 0;
+    ptr++;  // skip opening '
 
+    char c;
+    int consumed = 1;
+
+    if (*ptr == '\\') {
+        ptr++; consumed++;
+        switch (*ptr) {
+            case 'n': c = '\n'; break;
+            case 't': c = '\t'; break;
+            case '\\': c = '\\'; break;
+            case '\'': c = '\''; break;
+            case '0': c = '\0'; break;
+            default: c = *ptr; break;
+        }
+        ptr++; consumed++;
+    } else {
+        c = *ptr++; consumed++;
+    }
+
+    if (*ptr != '\'') return 0;
+    consumed++;  // closing '
+    buffer[0] = c;
+    buffer[1] = '\0';
+
+    return consumed;
+}
 
 Token *lexer(char *input) {
     Token head = {0};
@@ -259,17 +275,20 @@ Token *lexer(char *input) {
         }
 
         if (isStringLiteral(ptr, buffer)) {
-            cur = createToken(cur, STRING_LITERAL, buffer);
             ptr += strlen(buffer);
+
+            memmove(buffer, buffer + 1, strlen(buffer) - 2); // Remove quotes
+            buffer[strlen(buffer) - 2] = '\0';
+            cur = createToken(cur, STRING_LITERAL, buffer);
             continue;
         }
 
-        if (isCharLiteral(ptr, buffer)) {
+        int len;
+        if ((len = isCharLiteral(ptr, buffer)) > 0) {
             cur = createToken(cur, CHAR_LITERAL, buffer);
-            ptr += strlen(buffer);
+            ptr += len;
             continue;
         }
-        
 
         ptr++;
     }

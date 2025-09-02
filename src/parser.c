@@ -77,15 +77,22 @@ StructDef *find_structdef(const char *name) {
     return NULL;
 }
 
-ASTNode *new_string_literal(char *val);
 ASTNode *new_var_decl(ASTNode *type, char *name, ASTNode *init);
 
-ASTNode *new_char_literal(char value) {
-    ASTNode *node = malloc(sizeof(ASTNode));
-    node->type = AST_CHAR_LITERAL;
-    node->char_literal.value = value;
+ASTNode *new_string_literal(char *str) {
+    ASTNode *node = calloc(1, sizeof(ASTNode));
+    node->type = AST_STRING_LITERAL;
+    node->string_literal.value = strdup(str);
     return node;
 }
+
+ASTNode *new_char_literal(char *str) {
+    ASTNode *node = calloc(1, sizeof(ASTNode));
+    node->type = AST_CHAR_LITERAL;
+    node->char_literal.value = strdup(str);
+    return node;
+}
+
 
 ASTNode *new_type_array(ASTNode *elem_type, int size) {
     ASTNode *node = malloc(sizeof(ASTNode));
@@ -366,7 +373,7 @@ ASTNode *parse_primary(Token **cur) {
         return node;
     }
     if ((*cur)->kind == CHAR_LITERAL) {
-        ASTNode *node = new_char_literal((*cur)->value[0]);
+        ASTNode *node = new_char_literal((*cur)->value);
         *cur = (*cur)->next;
         return node;
     }
@@ -374,6 +381,7 @@ ASTNode *parse_primary(Token **cur) {
     if ((*cur)->kind == IDENTIFIER) {
         char *name = (*cur)->value;
         *cur = (*cur)->next;
+
         if ((*cur)->kind == L_PARENTHESES) {
             *cur = (*cur)->next;
             ASTNode **args = NULL;
@@ -387,11 +395,27 @@ ASTNode *parse_primary(Token **cur) {
                     break;
                 }
             }
-            if (!expect(cur, R_PARENTHESES)) parse_error("expected ')' after args", token_head, *cur);
+
+            if (!expect(cur, R_PARENTHESES))
+                parse_error("expected ')' after args", token_head, *cur);
             return new_call(name, args, arg_count);
         }
-        return new_identifier(name);
+
+        ASTNode *node = new_identifier(name);
+        while ((*cur)->kind == L_BRACKET) {
+            *cur = (*cur)->next;
+            ASTNode *index = parse_expr(cur);
+
+            if (!expect(cur, R_BRACKET))
+                parse_error("expected ']' after array index", token_head, *cur);
+
+            ASTNode *add = new_binary(ADD, node, index);
+            node = new_unary(ASTARISK, add);  // *(name + index)
+        }
+
+        return node;
     }
+
     if ((*cur)->kind == L_PARENTHESES) {
         *cur = (*cur)->next;
         ASTNode *node = parse_expr(cur);
@@ -515,12 +539,6 @@ ASTNode *parse_type(Token **cur) {
 
 }
 
-ASTNode *new_string_literal(char *val) {
-    ASTNode *node = malloc(sizeof(ASTNode));
-    node->type = AST_STRING_LITERAL;
-    node->string_literal.value = strdup(val);
-    return node;
-}
 ASTNode *parse_postfix(Token **cur) {
     ASTNode *node = parse_primary(cur);
     while (1) {
@@ -574,8 +592,20 @@ ASTNode *parse_unary(Token **cur) {
         *cur = (*cur)->next;
         return new_unary(DEC, parse_unary(cur));
     }
+    if ((*cur)->kind == STRING_LITERAL) {
+        ASTNode *node = new_string_literal((*cur)->value);
+        *cur = (*cur)->next;
+        return node;
+    }
+    if ((*cur)->kind == CHAR_LITERAL) {
+        ASTNode *node = new_char_literal((*cur)->value);
+        *cur = (*cur)->next;
+        return node;
+    }
+
     return parse_postfix(cur);
 }
+
 
 ASTNode *parse_mul(Token **cur) {
     ASTNode *node = parse_unary(cur);
@@ -1072,8 +1102,12 @@ void print_ast(ASTNode *node, int indent) {
 void free_ast(ASTNode *node) {
     if (!node) return;
     switch (node->type) {
-        case AST_NUMBER: free(node->number.value); break;
-        case AST_IDENTIFIER: free(node->identifier.name); break;
+        case AST_NUMBER:
+            free(node->number.value);
+            break;
+        case AST_IDENTIFIER:
+            free(node->identifier.name);
+            break;
         case AST_BINARY:
             free_ast(node->binary.left);
             free_ast(node->binary.right);
@@ -1083,18 +1117,21 @@ void free_ast(ASTNode *node) {
             free_ast(node->assign.right);
             break;
         case AST_VAR_DECL:
-            free(node->var_decl.var_type);
+            free_ast(node->var_decl.var_type);
             free(node->var_decl.name);
             if (node->var_decl.init) free_ast(node->var_decl.init);
             break;
         case AST_TYPE:
             free_ast(node->type_node.base_type);
-            free(node->type_node.base_type);
-            free(node->type_node.pointer_level);
-            free(node->type_node.type_modifiers);
+            break;
+        case AST_TYPE_ARRAY:
+            free_ast(node->type_array.element_type);
             break;
         case AST_STRING_LITERAL:
             free(node->string_literal.value);
+            break;
+        case AST_CHAR_LITERAL:
+            free(node->char_literal.value);
             break;
         case AST_UNARY:
             free_ast(node->unary.operand);
@@ -1129,7 +1166,6 @@ void free_ast(ASTNode *node) {
                 free_ast(node->call.args[i]);
             free(node->call.args);
             break;
-
         case AST_PARAM:
             free(node->param.type);
             free(node->param.name);
@@ -1140,25 +1176,42 @@ void free_ast(ASTNode *node) {
                 free_ast(node->struct_stmt.members[i]);
             free(node->struct_stmt.members);
             break;
+        case AST_STRUCT_MEMBER:
+            free(node->struct_member.type);
+            free(node->struct_member.name);
+            break;
         case AST_TYPEDEF:
             free(node->typedef_stmt.alias);
             free_ast(node->typedef_stmt.src_type);
             break;
-        case AST_STRUCT_MEMBER:
-            free(node->struct_member.type);
-            free(node->struct_member.name);
-            break;  
+        case AST_TYPEDEF_STRUCT:
+            free(node->typedef_struct.struct_name);
+            for (int i = 0; i < node->typedef_struct.member_count; i++)
+                free_ast(node->typedef_struct.members[i]);
+            free(node->typedef_struct.members);
+            free(node->typedef_struct.typedef_name);
+            break;
+        case AST_MEMBER_ACCESS:
+            free(node->member_access.member);
+            free_ast(node->member_access.lhs);
+            break;
+        case AST_ARROW_ACCESS:
+            free(node->arrow_access.member);
+            free_ast(node->arrow_access.lhs);
+            break;
         case AST_WHILE:
             free_ast(node->while_stmt.cond);
             free_ast(node->while_stmt.body);
             break;
         case AST_FOR:
-            if (node->for_stmt.init) free_ast(node->for_stmt.init); 
+            if (node->for_stmt.init) free_ast(node->for_stmt.init);
             if (node->for_stmt.cond) free_ast(node->for_stmt.cond);
             if (node->for_stmt.inc) free_ast(node->for_stmt.inc);
             free_ast(node->for_stmt.body);
             break;
-            
+        case AST_BREAK:
+        case AST_CONTINUE:
+            break;
         default:
             fprintf(stderr, "Unknown AST Node Type: %d\n", node->type);
             exit(1);

@@ -4,42 +4,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-char *readSampleInput(const char *filePath) {
-    FILE *file = fopen(filePath, "r");
-    if (!file) {
-        perror("Failed to open file");
-        return NULL;
-    }
-    fseek(file, 0, SEEK_END);
-    long fileSize = ftell(file);
-    rewind(file);
+// Reads entire file into a newly-allocated, NUL-terminated buffer.
+// Caller is responsible for freeing the returned buffer.
+char *readSampleInput(const char *filePath);
 
-    char *buffer = malloc(fileSize + 1);
-    if (!buffer) {
-        perror("Failed to allocate memory");
-        fclose(file);
-        return NULL;
-    }
-    fread(buffer, 1, fileSize, file);
-    buffer[fileSize] = '\0';
-    fclose(file);
-    return buffer;
-}
-
-void saveOutput(const char *filePath, const char *content) {
-    #ifdef _WIN32
-        _mkdir("tests\\outputs");
-    #else
-        mkdir("tests/outputs", 0777);
-    #endif
-
-    FILE *f = fopen(filePath, "w");
-    if (!f) {
-        perror("Failed to open output file");
-        return;
-    }
-    fputs(content, f);
-    fclose(f);
-}
+// Saves content to filePath, creating the tests/outputs directory if needed.
+void saveOutput(const char *filePath, const char *content);
 
 #endif
