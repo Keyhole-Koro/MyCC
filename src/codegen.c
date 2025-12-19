@@ -2,6 +2,86 @@
 #include <stdio.h>
 #include <string.h>
 
+// --- Basic struct support scaffolding ---
+typedef struct {
+    const char *name;   // member name
+    int offset;         // byte offset from base (slot-based for now)
+    int size_bytes;     // natural element size (1 for char, SLOT_SIZE for word-sized)
+    int total_size_bytes; // full storage size for the member (arrays etc.)
+    const char *base_type;  // underlying base type name
+    int pointer_level;      // pointer count for the member type
+    int is_array;           // whether member is declared as array
+    int array_length;       // first dimension length if array (0 if unknown)
+} MemberInfo;
+
+typedef struct {
+    const char *type_name;   // typedef name or struct name
+    MemberInfo *members;     // flat members (no nesting)
+    int member_count;
+    int size_bytes;          // total size in bytes (slot-based approximation)
+} StructInfo;
+
+typedef struct {
+    const char *name;       // variable name
+    const char *base_type;  // type name (typedef/struct)
+    int pointer_level;      // pointer level from AST
+    int is_array;           // whether the declaration was an array
+    int array_length;       // first dimension length if array
+} LocalInfo;
+
+typedef struct {
+    const char *base_type;
+    int pointer_level;
+    int is_array;
+} TypeInfo;
+
+static StructInfo *cg_structs = NULL;
+static int cg_struct_count = 0;
+static LocalInfo *cg_locals_info = NULL;
+static int cg_locals_count = 0;
+
+// ---- String literal pool ----
+typedef struct {
+    char *text;     // NUL-terminated literal contents (without quotes)
+    char *label;    // label name like s_0
+} StrItem;
+static StrItem *cg_strings = NULL;
+static int cg_string_count = 0;
+static StringBuilder cg_data_sb; // holds emitted data bytes
+static int cg_data_sb_inited = 0;
+
+static const char *intern_string_literal(const char *s)
+{
+    // deduplicate
+    for (int i = 0; i < cg_string_count; i++) {
+        if (strcmp(cg_strings[i].text, s) == 0) return cg_strings[i].label;
+    }
+    // create new
+    char buf[32];
+    snprintf(buf, sizeof(buf), "s_%d", cg_string_count);
+    StrItem it = { strdup(s), strdup(buf) };
+    // ensure data sb
+    if (!cg_data_sb_inited) { sb_init(&cg_data_sb); cg_data_sb_inited = 1; }
+    // emit data for this string as bytes plus NUL
+    sb_append(&cg_data_sb, "%s:\n", it.label);
+    // Prefer a simple .byte list (emit bytes in hex)
+    sb_append(&cg_data_sb, "  .byte ");
+    const unsigned char *p = (const unsigned char*)s;
+    int first = 1;
+    while (*p) {
+        sb_append(&cg_data_sb, "%s0x%02X", first ? "" : ", ", (unsigned)*p);
+        first = 0;
+        p++;
+    }
+    // terminating NUL
+    sb_append(&cg_data_sb, "%s0x00\n", first ? "" : ", ");
+
+    // store
+    cg_strings = (StrItem*)realloc(cg_strings, sizeof(StrItem) * (cg_string_count + 1));
+    cg_strings[cg_string_count++] = it;
+    return it.label;
+}
+
 // Argument registers for first three args
 static const char *arg_regs[] = {"r5", "r6", "r7"};
 
@@ -30,6 +110,14 @@ static int local_index(const char *name, char **locals, int local_count)
     return -1;
 }
 
+static const LocalInfo *find_local_info(const char *name);
+
+static const StructInfo *find_struct(const char *type_name);
+
+static void gen_lvalue_addr(ASTNode *node, StringBuilder *sb, const char *target_reg,
+                            char **params, int param_count,
+                            char **locals, int local_count);
+                            
 static void gen_stmt(ASTNode *node, StringBuilder *sb,
     char **params, int param_count,
     char **locals, int local_count);
@@ -47,6 +135,7 @@ static void emit_load_var(StringBuilder *sb, const char *name, const char *targe
 static void emit_store_var(StringBuilder *sb, const char *name, const char *src_reg,
                            char **params, int param_count,
                            char **locals, int local_count);
+static void emit_store_to_addr(StringBuilder *sb, const char *addr_reg, const char *value_reg, int is_byte);
 static void emit_addr_of_var(StringBuilder *sb, const char *name, const char *target_reg,
                              char **params, int param_count, char **locals, int local_count);
 static void emit_cond_jump(ASTNode *left, ASTNode *right, TokenKind op, StringBuilder *sb,
@@ -78,8 +167,45 @@ static void gen_while(ASTNode *node, StringBuilder *sb,
                       char **locals, int local_count,
                       const char *break_label,
                       const char *continue_label);
+static void set_localinfo_from_type(LocalInfo *info, ASTNode *type_node);
+static int base_type_is_char(const char *name);
+static int typeinfo_is_byte(const TypeInfo *info);
+static int infer_expr_type(ASTNode *expr, TypeInfo *out);
+static int pointer_step_bytes(const TypeInfo *info);
+// Char/byte and struct helpers (forward decls)
+static const StructInfo *find_struct(const char *type_name);
+static const MemberInfo *find_member_info(const char *type_name, const char *member);
+static int is_char_scalar_var(const char *name);
+static int lvalue_is_byte(ASTNode *node);
+static void emit_load_from_addr(StringBuilder *sb, const char *target_reg, const char *addr_reg, int is_byte);
+static void emit_store_to_addr(StringBuilder *sb, const char *addr_reg, const char *value_reg, int is_byte);
 
 // Recursively collect all local variable names in the block and its nested statements
+static int slots_for_type(ASTNode *type_node)
+{
+    if (!type_node) return 1;
+    if (type_node->type == AST_TYPE_ARRAY) {
+        int elem = slots_for_type(type_node->type_array.element_type);
+        int n = type_node->type_array.array_size;
+        if (n <= 0) n = 1;
+        return elem * n;
+    }
+    if (type_node->type == AST_TYPE) {
+        if (type_node->type_node.pointer_level > 0) return 1;
+        ASTNode *bt = type_node->type_node.base_type;
+        if (bt && bt->type == AST_IDENTIFIER) {
+            const StructInfo *si = find_struct(bt->identifier.name);
+            if (si) {
+                if (si->size_bytes > 0)
+                    return (si->size_bytes + SLOT_SIZE - 1) / SLOT_SIZE;
+                return si->member_count > 0 ? si->member_count : 1;
+            }
+        }
+        return 1;
+    }
+    return 1;
+}
+
 static int collect_locals(ASTNode *node, char **locals)
 {
     int count = 0;
@@ -93,9 +219,13 @@ static int collect_locals(ASTNode *node, char **locals)
             count += collect_locals(node->block.stmts[i], locals + count);
         }
         break;
-    case AST_VAR_DECL:
-        locals[count++] = node->var_decl.name;
-        break;
+    case AST_VAR_DECL: {
+        int slots = slots_for_type(node->var_decl.var_type);
+        if (slots < 1) slots = 1;
+        for (int s = 0; s < slots; s++) {
+            locals[count++] = node->var_decl.name;
+        }
+        break; }
     case AST_FOR:
         // Collect locals from the init part (e.g. for (int i = ...))
         if (node->for_stmt.init)
@@ -128,7 +258,9 @@ static int find_var_offset(const char *name, char **params, int param_count,
     {
         if (is_param)
             *is_param = 1;
-        return param_offset(idx);
+        if (idx < 3)
+            return param_offset(idx);
+        return 4 + (idx - 3) * SLOT_SIZE;
     }
     idx = local_index(name, locals, local_count);
     if (idx >= 0)
@@ -146,42 +278,53 @@ static void emit_unary_inc_dec(ASTNode *node, StringBuilder *sb, const char *tar
                         char **params, int param_count,
                         char **locals, int local_count)
 {
-    if (!node || node->type != AST_UNARY || node->unary.operand->type != AST_IDENTIFIER)
-    {
-        sb_append(sb, "  ; unsupported unary operation\n");
-        return;
-    }
-
-    const char *var_name = node->unary.operand->identifier.name;
-
-    // Load the current value
-    emit_load_var(sb, var_name, "r1", params, param_count, locals, local_count);
-
-    if (node->unary.op == POST_INC || node->unary.op == INC)
-    {
-        sb_append(sb, "  \n; increment variable '%s'\n", var_name);
-        // Increment r1 by 1
-        sb_append(sb, "  addis r1, 1\n");
-    }
-    else if (node->unary.op == POST_DEC || node->unary.op == DEC)
-    {
-        sb_append(sb, "  \n; decrement variable '%s'\n", var_name);
-        // Decrement r1 by 1
-        sb_append(sb, "  addis r1, -1\n");
-    }
-    else
-    {
-        sb_append(sb, "  ; unknown unary op\n");
+    if (!node || node->type != AST_UNARY) {
+        fprintf(stderr, "Codegen error: emit_unary_inc_dec on non-unary node\n");
         exit(1);
-        return;
     }
 
-    // Store back to variable
-    emit_store_var(sb, var_name, "r1", params, param_count, locals, local_count);
+    // Compute address of operand lvalue into r3
+    gen_lvalue_addr(node->unary.operand, sb, "r3", params, param_count, locals, local_count);
+    int is_byte = lvalue_is_byte(node->unary.operand);
+    // Load current value into r1
+    emit_load_from_addr(sb, "r1", "r3", is_byte);
 
-    // Move result to target register if needed
-    if (strcmp(target_reg, "r1") != 0)
-        sb_append(sb, "  mov %s, r1\n", target_reg);
+    int delta = 1;
+    TypeInfo operand_type;
+    if (infer_expr_type(node->unary.operand, &operand_type) && operand_type.pointer_level > 0) {
+        delta = pointer_step_bytes(&operand_type);
+    }
+
+    switch (node->unary.op) {
+    case POST_INC: {
+        // result is original value
+        if (strcmp(target_reg, "r1") != 0)
+            sb_append(sb, "  mov %s, r1\n", target_reg);
+        sb_append(sb, "  addis r1, %d\n", delta);
+        emit_store_to_addr(sb, "r3", "r1", is_byte);
+        break; }
+    case POST_DEC: {
+        if (strcmp(target_reg, "r1") != 0)
+            sb_append(sb, "  mov %s, r1\n", target_reg);
+        sb_append(sb, "  addis r1, -%d\n", delta);
+        emit_store_to_addr(sb, "r3", "r1", is_byte);
+        break; }
+    case INC: {
+        sb_append(sb, "  addis r1, %d\n", delta);
+        emit_store_to_addr(sb, "r3", "r1", is_byte);
+        if (strcmp(target_reg, "r1") != 0)
+            sb_append(sb, "  mov %s, r1\n", target_reg);
+        break; }
+    case DEC: {
+        sb_append(sb, "  addis r1, -%d\n", delta);
+        emit_store_to_addr(sb, "r3", "r1", is_byte);
+        if (strcmp(target_reg, "r1") != 0)
+            sb_append(sb, "  mov %s, r1\n", target_reg);
+        break; }
+    default:
+        fprintf(stderr, "Codegen error: unknown unary inc/dec op\n");
+        exit(1);
+    }
 }
 
 // Emit code to load variable (param/local/global) to target_reg
@@ -189,12 +332,10 @@ static void emit_load_var(StringBuilder *sb, const char *name, const char *targe
                    char **params, int param_count,
                    char **locals, int local_count)
 {
-    int is_param = 0;
     int idx = param_index(name, params, param_count);
     int offset;
     if (idx >= 0)
     {
-        is_param = 1;
         if (idx < 3)
         {
             // bp-4, bp-8, bp-12…
@@ -202,7 +343,7 @@ static void emit_load_var(StringBuilder *sb, const char *name, const char *targe
             sb_append(sb, "  \n; load param '%s' (arg%d, reg) into %s\n", name, idx + 1, target_reg);
             sb_append(sb, "  mov   r3, bp\n");
             sb_append(sb, "  addis r3, %d\n", offset);
-            sb_append(sb, "  load  %s, r3\n", target_reg);
+            emit_load_from_addr(sb, target_reg, "r3", is_char_scalar_var(name));
         }
         else
         {
@@ -211,7 +352,7 @@ static void emit_load_var(StringBuilder *sb, const char *name, const char *targe
             sb_append(sb, "  \n; load param '%s' (arg%d, stack) into %s\n", name, idx + 1, target_reg);
             sb_append(sb, "  mov   r3, bp\n");
             sb_append(sb, "  addis r3, %d\n", offset);
-            sb_append(sb, "  load  %s, r3\n", target_reg);
+            emit_load_from_addr(sb, target_reg, "r3", is_char_scalar_var(name));
         }
     }
     else
@@ -224,7 +365,7 @@ static void emit_load_var(StringBuilder *sb, const char *name, const char *targe
             sb_append(sb, "  \n; load local '%s' into %s\n", name, target_reg);
             sb_append(sb, "  mov   r3, bp\n");
             sb_append(sb, "  addis r3, %d\n", offset);
-            sb_append(sb, "  load  %s, r3\n", target_reg);
+            emit_load_from_addr(sb, target_reg, "r3", is_char_scalar_var(name));
         }
         else
         {
@@ -247,7 +388,7 @@ static void emit_store_var(StringBuilder *sb, const char *name, const char *src_
         sb_append(sb, "  \n; store %s to var '%s'\n", src_reg, name);
         sb_append(sb, "  mov   r3, bp\n");
         sb_append(sb, "  addis r3, %d\n", offset);
-        sb_append(sb, "  store r3, %s\n", src_reg);
+        emit_store_to_addr(sb, "r3", src_reg, is_char_scalar_var(name));
     }
     else
     {
@@ -262,6 +403,11 @@ static void emit_addr_of_var(StringBuilder *sb, const char *name, const char *ta
 {
     int is_param = 0;
     int offset = find_var_offset(name, params, param_count, locals, local_count, &is_param);
+    if (is_param == -1) {
+        sb_append(sb, "  \n; address of global '%s'\n", name);
+        sb_append(sb, "  movi %s, %s\n", target_reg, name);
+        return;
+    }
     sb_append(sb, "  \n; address of '%s'\n", name);
     sb_append(sb, "  mov   %s, bp\n", target_reg);
     sb_append(sb, "  addis %s, %d\n", target_reg, offset);
@@ -329,6 +475,253 @@ static void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
               char **locals, int local_count);
 
 static int label_count = 0;
+
+// ---- Struct support helpers ----
+static const StructInfo *find_struct(const char *type_name) {
+    for (int i = 0; i < cg_struct_count; i++) {
+        if (strcmp(cg_structs[i].type_name, type_name) == 0) return &cg_structs[i];
+    }
+    return NULL;
+}
+
+static const MemberInfo *find_member_info(const char *type_name, const char *member) {
+    const StructInfo *si = find_struct(type_name);
+    if (!si) return NULL;
+    for (int i = 0; i < si->member_count; i++)
+        if (strcmp(si->members[i].name, member) == 0) return &si->members[i];
+    return NULL;
+}
+
+static int base_type_is_char(const char *name) {
+    return name && strcmp(name, "char") == 0;
+}
+
+static int is_char_scalar_var(const char *name) {
+    const LocalInfo *li = find_local_info(name);
+    return (li && li->pointer_level == 0 && !li->is_array && base_type_is_char(li->base_type));
+}
+
+static int typeinfo_is_byte(const TypeInfo *info) {
+    return info && info->pointer_level == 0 && base_type_is_char(info->base_type);
+}
+
+static int infer_expr_type(ASTNode *expr, TypeInfo *out) {
+    if (!expr || !out) return 0;
+    out->base_type = "";
+    out->pointer_level = 0;
+    out->is_array = 0;
+    switch (expr->type) {
+    case AST_IDENTIFIER: {
+        const LocalInfo *li = find_local_info(expr->identifier.name);
+        if (!li) return 0;
+        out->base_type = li->base_type;
+        out->pointer_level = li->pointer_level;
+        out->is_array = li->is_array;
+        return 1;
+    }
+    case AST_MEMBER_ACCESS: {
+        TypeInfo lhs;
+        if (!infer_expr_type(expr->member_access.lhs, &lhs)) return 0;
+        if (!lhs.base_type || lhs.base_type[0] == '\0') return 0;
+        const MemberInfo *mi = find_member_info(lhs.base_type, expr->member_access.member);
+        if (!mi) return 0;
+        out->base_type = mi->base_type ? mi->base_type : "";
+        out->pointer_level = mi->pointer_level;
+        out->is_array = mi->is_array;
+        if (mi->is_array) out->pointer_level += 1;
+        return 1;
+    }
+    case AST_ARROW_ACCESS: {
+        TypeInfo lhs;
+        if (!infer_expr_type(expr->arrow_access.lhs, &lhs)) return 0;
+        if (lhs.pointer_level <= 0 || !lhs.base_type || lhs.base_type[0] == '\0') return 0;
+        const MemberInfo *mi = find_member_info(lhs.base_type, expr->arrow_access.member);
+        if (!mi) return 0;
+        out->base_type = mi->base_type ? mi->base_type : "";
+        out->pointer_level = mi->pointer_level;
+        out->is_array = mi->is_array;
+        if (mi->is_array) out->pointer_level += 1;
+        return 1;
+    }
+    case AST_UNARY:
+        if (expr->unary.op == ASTARISK) {
+            TypeInfo inner;
+            if (!infer_expr_type(expr->unary.operand, &inner)) return 0;
+            if (inner.pointer_level <= 0) return 0;
+            out->base_type = inner.base_type;
+            out->pointer_level = inner.pointer_level - 1;
+            out->is_array = 0;
+            return 1;
+        } else if (expr->unary.op == AMPERSAND) {
+            TypeInfo inner;
+            if (!infer_expr_type(expr->unary.operand, &inner)) return 0;
+            out->base_type = inner.base_type;
+            out->pointer_level = inner.pointer_level + 1;
+            out->is_array = 0;
+            return 1;
+        }
+        return 0;
+    default:
+        return 0;
+    }
+}
+
+static int pointer_step_bytes(const TypeInfo *info) {
+    if (!info || info->pointer_level <= 0) return 1;
+    if (info->pointer_level > 1) return SLOT_SIZE;
+    if (!info->base_type || info->base_type[0] == '\0') return SLOT_SIZE;
+    if (base_type_is_char(info->base_type)) return 1;
+    const StructInfo *si = find_struct(info->base_type);
+    if (si && si->size_bytes > 0) return si->size_bytes;
+    return SLOT_SIZE;
+}
+
+static int lvalue_is_byte(ASTNode *node) {
+    TypeInfo info;
+    if (!infer_expr_type(node, &info)) return 0;
+    return typeinfo_is_byte(&info);
+}
+
+static void emit_load_from_addr(StringBuilder *sb, const char *target_reg, const char *addr_reg, int is_byte) {
+    if (is_byte)
+        sb_append(sb, "  loadb %s, %s\n", target_reg, addr_reg);
+    else
+        sb_append(sb, "  load %s, %s\n", target_reg, addr_reg);
+}
+
+static void emit_store_to_addr(StringBuilder *sb, const char *addr_reg, const char *value_reg, int is_byte) {
+    if (is_byte)
+        sb_append(sb, "  storeb %s, %s\n", addr_reg, value_reg);
+    else
+        sb_append(sb, "  store %s, %s\n", addr_reg, value_reg);
+}
+
+static const LocalInfo *find_local_info(const char *name) {
+    for (int i = 0; i < cg_locals_count; i++) {
+        if (strcmp(cg_locals_info[i].name, name) == 0) return &cg_locals_info[i];
+    }
+    return NULL;
+}
+
+static void set_localinfo_from_type(LocalInfo *info, ASTNode *type_node) {
+    if (!info) return;
+    info->base_type = "";
+    info->pointer_level = 0;
+    info->is_array = 0;
+    info->array_length = 0;
+    if (!type_node) return;
+
+    int array_levels = 0;
+    ASTNode *node = type_node;
+    while (node && node->type == AST_TYPE_ARRAY) {
+        info->is_array = 1;
+        if (info->array_length == 0 && node->type_array.array_size > 0) {
+            info->array_length = node->type_array.array_size;
+        }
+        array_levels++;
+        node = node->type_array.element_type;
+    }
+
+    if (!node) {
+        info->pointer_level = array_levels;
+        return;
+    }
+
+    if (node->type == AST_TYPE) {
+        ASTNode *bt = node->type_node.base_type;
+        if (bt && bt->type == AST_IDENTIFIER) {
+            info->base_type = bt->identifier.name;
+        }
+        info->pointer_level = node->type_node.pointer_level + array_levels;
+    } else {
+        info->pointer_level = array_levels;
+    }
+}
+
+static int collect_local_type_info(ASTNode *node, LocalInfo *arr) {
+    int n = 0;
+    if (!node) return 0;
+    switch (node->type) {
+    case AST_BLOCK:
+        for (int i = 0; i < node->block.count; i++)
+            n += collect_local_type_info(node->block.stmts[i], arr ? (arr + n) : NULL);
+        break;
+    case AST_VAR_DECL:
+        if (arr) {
+            arr[n].name = node->var_decl.name;
+            set_localinfo_from_type(&arr[n], node->var_decl.var_type);
+        }
+        n++;
+        break;
+    case AST_FOR:
+        if (node->for_stmt.init)
+            n += collect_local_type_info(node->for_stmt.init, arr ? (arr + n) : NULL);
+        n += collect_local_type_info(node->for_stmt.body, arr ? (arr + n) : NULL);
+        if (node->for_stmt.inc)
+            n += collect_local_type_info(node->for_stmt.inc, arr ? (arr + n) : NULL);
+        break;
+    case AST_IF:
+        n += collect_local_type_info(node->if_stmt.then_stmt, arr ? (arr + n) : NULL);
+        if (node->if_stmt.else_stmt)
+            n += collect_local_type_info(node->if_stmt.else_stmt, arr ? (arr + n) : NULL);
+        break;
+    default:
+        break;
+    }
+    return n;
+}
+
+static void gen_lvalue_addr(ASTNode *node, StringBuilder *sb, const char *target_reg,
+                            char **params, int param_count,
+                            char **locals, int local_count) {
+    if (!node) { sb_append(sb, "  ; gen_lvalue_addr: null\n"); return; }
+    switch (node->type) {
+    case AST_IDENTIFIER: {
+        emit_addr_of_var(sb, node->identifier.name, target_reg, params, param_count, locals, local_count);
+        break; }
+    case AST_UNARY: {
+        if (node->unary.op == ASTARISK) {
+            // address is the value of operand
+            gen_expr(node->unary.operand, sb, target_reg, params, param_count, locals, local_count);
+        } else {
+            sb_append(sb, "  ; unsupported lvalue op\n");
+        }
+        break; }
+    case AST_MEMBER_ACCESS: {
+        TypeInfo lhs_type;
+        if (!infer_expr_type(node->member_access.lhs, &lhs_type) ||
+            !lhs_type.base_type || lhs_type.base_type[0] == '\0') {
+            sb_append(sb, "  ; unknown member base type\n");
+            break;
+        }
+        const MemberInfo *mi = find_member_info(lhs_type.base_type, node->member_access.member);
+        if (!mi) {
+            sb_append(sb, "  ; unknown member %s of %s\n", node->member_access.member, lhs_type.base_type);
+            break;
+        }
+        gen_lvalue_addr(node->member_access.lhs, sb, target_reg, params, param_count, locals, local_count);
+        sb_append(sb, "  addis %s, %d\n", target_reg, mi->offset);
+        break; }
+    case AST_ARROW_ACCESS: {
+        TypeInfo lhs_type;
+        if (!infer_expr_type(node->arrow_access.lhs, &lhs_type) ||
+            lhs_type.pointer_level <= 0 ||
+            !lhs_type.base_type || lhs_type.base_type[0] == '\0') {
+            sb_append(sb, "  ; unknown pointer base for arrow access\n");
+            break;
+        }
+        const MemberInfo *mi = find_member_info(lhs_type.base_type, node->arrow_access.member);
+        if (!mi) {
+            sb_append(sb, "  ; unknown member %s of %s\n", node->arrow_access.member, lhs_type.base_type);
+            break;
+        }
+        gen_expr(node->arrow_access.lhs, sb, target_reg, params, param_count, locals, local_count);
+        sb_append(sb, "  addis %s, %d\n", target_reg, mi->offset);
+        break; }
+    default:
+        sb_append(sb, "  ; unsupported lvalue kind: %s\n", astType2str(node->type));
+    }
+}
 
 static void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
                     char **params, int param_count, char **locals, int local_count)
@@ -468,7 +861,7 @@ static void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_
     
 
     default:
-        sb_append(sb, "  \n; unknown binary op\n");
+        fprintf(stderr, "Codegen error: unknown binary op\n");
         exit(1);
     }
 
@@ -480,11 +873,13 @@ static void gen_call(ASTNode *node, StringBuilder *sb, const char *target_reg,
               char **params, int param_count, char **locals, int local_count)
 {
     int argc = node->call.arg_count;
+    int stack_args = argc > 3 ? (argc - 3) : 0;
 
     // Allocate space for stack-passed arguments (4th and beyond)
-    if (argc > 3)
+    if (stack_args > 0)
     {
-        sb_append(sb, "  ; allocate stack space for stack arguments\n");
+        sb_append(sb, "  ; push stack arguments\n");
+        sb_append(sb, "  addis sp, -%d\n", stack_args * SLOT_SIZE);
         for (int i = 3; i < argc; i++)
         {
             gen_expr(node->call.args[i], sb, "r1", params, param_count, locals, local_count);
@@ -503,10 +898,10 @@ static void gen_call(ASTNode *node, StringBuilder *sb, const char *target_reg,
     sb_append(sb, "  call f_%s\n", node->call.name);
 
     // After call, restore stack pointer
-    if (argc > 3)
+    if (stack_args > 0)
     {
         sb_append(sb, "  ; restore sp after call\n");
-        sb_append(sb, "  addis sp, %d\n", (argc - 3) * SLOT_SIZE);
+        sb_append(sb, "  addis sp, %d\n", stack_args * SLOT_SIZE);
     }
 
     // Move return value to target register if needed
@@ -568,6 +963,7 @@ static void gen_for(ASTNode *node, StringBuilder *sb,
     const char *continue_label)
 
 {
+    (void)break_label; (void)continue_label;
     static int label_count = 0;
     int cur_label = label_count++;
     char for_cond[32], for_body[32], for_inc[32], for_end[32];
@@ -618,6 +1014,7 @@ static void gen_while(ASTNode *node, StringBuilder *sb,
     const char *break_label,
     const char *continue_label)
 {
+    (void)break_label; (void)continue_label;
     static int label_counter = 0;
     int cur = label_counter++;
 
@@ -659,6 +1056,22 @@ static void gen_while(ASTNode *node, StringBuilder *sb,
     sb_append(sb, "%s:\n", end_label);
 }
 
+static void gen_assign(ASTNode *node, StringBuilder *sb,
+              char **params, int param_count,
+              char **locals, int local_count,
+              const char *target_reg) {
+    if (!node || node->type != AST_ASSIGN) {
+        fprintf(stderr, "Codegen error: gen_assign called on non-assignment node\n");
+        exit(1);
+    }
+    gen_expr(node->assign.right, sb, "r1", params, param_count, locals, local_count);
+    gen_lvalue_addr(node->assign.left, sb, "r3", params, param_count, locals, local_count);
+    int is_byte = lvalue_is_byte(node->assign.left);
+    emit_store_to_addr(sb, "r3", "r1", is_byte);
+    if (target_reg && strcmp(target_reg, "r1") != 0) {
+        sb_append(sb, "  mov %s, r1\n", target_reg);
+    }
+}
 
 static void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
               char **params, int param_count,
@@ -672,6 +1085,20 @@ static void _gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
 {
     switch (node->type)
     {
+    case AST_STRING_LITERAL: {
+        const char *label = intern_string_literal(node->string_literal.value ? node->string_literal.value : "");
+        sb_append(sb, "  mov  %s, %s\n", target_reg, label);
+        break; }
+    case AST_CHAR_LITERAL: {
+        unsigned char v = 0;
+        if (node->char_literal.value)
+            v = (unsigned char)node->char_literal.value[0];
+        sb_append(sb, "  \n; load char %u into %s\n", (unsigned)v, target_reg);
+        sb_append(sb, "  movi  %s, %u\n", target_reg, (unsigned)v);
+        break; }
+    case AST_ASSIGN:
+        gen_assign(node, sb, params, param_count, locals, local_count, target_reg);
+        break;
     case AST_NUMBER:
         sb_append(sb, "  \n; load constant %s into %s\n", node->number.value, target_reg);
         sb_append(sb, "  movi  %s, %s\n", target_reg, node->number.value);
@@ -685,19 +1112,17 @@ static void _gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
                       0);
             if (!want_address) {
                 sb_append(sb, "  ; dereference *expr\n");
-                sb_append(sb, "  load %s, r3\n", target_reg);
+                int isb = 0;
+                TypeInfo result_type;
+                if (infer_expr_type(node, &result_type))
+                    isb = typeinfo_is_byte(&result_type);
+                emit_load_from_addr(sb, target_reg, "r3", isb);
             } else {
                 sb_append(sb, "  mov %s, r3\n", target_reg);
             }
             break;
         case AMPERSAND:
-            if (node->unary.operand->type == AST_IDENTIFIER) {
-                const char *var_name = node->unary.operand->identifier.name;
-                emit_addr_of_var(sb, var_name, target_reg, params, param_count, locals, local_count);
-            } else {
-                sb_append(sb, "  ; & of non-identifier not supported\n");
-                exit(1);
-            }
+            gen_lvalue_addr(node->unary.operand, sb, target_reg, params, param_count, locals, local_count);
             break;
 
         default:
@@ -714,8 +1139,23 @@ static void _gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
     case AST_CALL:
         gen_call(node, sb, target_reg, params, param_count, locals, local_count);
         break;
+    case AST_MEMBER_ACCESS: {
+        // load *(addr(lhs) + offset(member))
+        gen_lvalue_addr(node, sb, "r3", params, param_count, locals, local_count);
+        {
+            int isb = lvalue_is_byte(node);
+            emit_load_from_addr(sb, target_reg, "r3", isb);
+        }
+        break; }
+    case AST_ARROW_ACCESS: {
+        gen_lvalue_addr(node, sb, "r3", params, param_count, locals, local_count);
+        {
+            int isb = lvalue_is_byte(node);
+            emit_load_from_addr(sb, target_reg, "r3", isb);
+        }
+        break; }
     default:
-        sb_append(sb, "  \n; unknown expr node %s\n", astType2str(node->type));
+        fprintf(stderr, "Codegen error: unknown expr node %s\n", astType2str(node->type));
         exit(1);
     }
 }
@@ -748,22 +1188,7 @@ static void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
         emit_unary_inc_dec(node, sb, "r1", params, param_count, locals, local_count);
         break;
     case AST_ASSIGN:
-        if (node->assign.left->type == AST_UNARY && node->assign.left->unary.op == ASTARISK) {
-            // *p = val
-            _gen_expr(node->assign.left->unary.operand, sb, "r3",
-                    params, param_count, locals, local_count, 0);
-            gen_expr(node->assign.right, sb, "r1", params, param_count, locals, local_count);
-            sb_append(sb, "  ; *ptr = value\n");
-            sb_append(sb, "  load r3, r3\n");
-            sb_append(sb, "  store r3, r1\n");
-        } else if (node->assign.left->type == AST_IDENTIFIER) {
-
-            gen_expr(node->assign.right, sb, "r1", params, param_count, locals, local_count);
-            emit_store_var(sb, node->assign.left->identifier.name, "r1", params, param_count, locals, local_count);
-        } else {
-            sb_append(sb, "  ; unsupported assignment target\n");
-            exit(1);
-        }
+        gen_assign(node, sb, params, param_count, locals, local_count, "r1");
         break;
     case AST_BREAK:
         if (break_label)
@@ -804,7 +1229,7 @@ static void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
         }
         break;
     default:
-        printf("gen_stmt: unknown node type %s\n", astType2str(node->type));
+        fprintf(stderr, "Codegen error: unknown stmt node %s\n", astType2str(node->type));
         exit(1);
     }
 }
@@ -824,6 +1249,26 @@ void gen_func(ASTNode *node, StringBuilder *sb)
 
     char *locals[32] = {0};
     int local_count = collect_locals(node->fundef.body, locals);
+
+    // Collect param + local type info for struct member access
+    int locals_only_count = collect_local_type_info(node->fundef.body, NULL);
+    cg_locals_count = param_count + locals_only_count;
+    if (cg_locals_count > 0) {
+        cg_locals_info = (LocalInfo*)malloc(sizeof(LocalInfo) * cg_locals_count);
+        int idx = 0;
+        // Parameters first
+        for (int i = 0; i < param_count; i++, idx++) {
+            ASTNode *p = node->fundef.params[i];
+            cg_locals_info[idx].name = p->param.name;
+            set_localinfo_from_type(&cg_locals_info[idx], p->param.type);
+        }
+        // Then locals from body
+        if (locals_only_count > 0) {
+            collect_local_type_info(node->fundef.body, cg_locals_info + idx);
+        }
+    } else {
+        cg_locals_info = NULL;
+    }
 
     sb_append(sb, "\n");
     sb_append(sb, "%s%s:\n", strcmp(fname, "__START__") == 0 ? "" : "f_", fname);
@@ -855,12 +1300,125 @@ void gen_func(ASTNode *node, StringBuilder *sb)
     }
     if (strcmp(fname, "__START__") == 0)
         sb_append(sb, "  halt");
+
+    // cleanup per-function locals info
+    if (cg_locals_info) { free(cg_locals_info); cg_locals_info = NULL; }
+    cg_locals_count = 0;
 }
 
 char *codegen(ASTNode *root)
 {
     StringBuilder sb;
     sb_init(&sb);
+
+    // Build struct table from toplevel AST (typedef struct and struct)
+    // Assume each member consumes SLOT_SIZE and lay out sequentially
+    cg_struct_count = 0;
+    cg_structs = NULL;
+    if (root && root->type == AST_BLOCK) {
+        for (int i = 0; i < root->block.count; i++) {
+            ASTNode *n = root->block.stmts[i];
+            if (n->type == AST_TYPEDEF_STRUCT) {
+                int count = n->typedef_struct.member_count;
+                MemberInfo *members = NULL;
+                int struct_bytes = 0;
+                if (count > 0) {
+                    members = (MemberInfo*)malloc(sizeof(MemberInfo) * count);
+                    int offset = 0;
+                    for (int m = 0; m < count; m++) {
+                        ASTNode *mem = n->typedef_struct.members[m];
+                        const char *mname = "";
+                        LocalInfo tmp = {0};
+                        int member_slots = 1;
+                        if (mem->type == AST_VAR_DECL) {
+                            mname = mem->var_decl.name ? mem->var_decl.name : "";
+                            set_localinfo_from_type(&tmp, mem->var_decl.var_type);
+                            if (mem->var_decl.var_type) {
+                                member_slots = slots_for_type(mem->var_decl.var_type);
+                                if (member_slots < 1) member_slots = 1;
+                            }
+                        } else if (mem->type == AST_STRUCT_MEMBER) {
+                            mname = mem->struct_member.name ? mem->struct_member.name : "";
+                            tmp.base_type = mem->struct_member.type ? mem->struct_member.type : "";
+                            tmp.pointer_level = 0;
+                            tmp.is_array = 0;
+                            tmp.array_length = 0;
+                        } else {
+                            tmp.base_type = "";
+                            tmp.pointer_level = 0;
+                            tmp.is_array = 0;
+                            tmp.array_length = 0;
+                        }
+                        members[m].name = mname;
+                        members[m].base_type = tmp.base_type ? tmp.base_type : "";
+                        members[m].pointer_level = tmp.pointer_level;
+                        members[m].is_array = tmp.is_array;
+                        members[m].array_length = tmp.array_length;
+                        members[m].size_bytes = (tmp.pointer_level == 0 && !tmp.is_array && base_type_is_char(tmp.base_type)) ? 1 : SLOT_SIZE;
+                        members[m].offset = offset;
+                        members[m].total_size_bytes = member_slots * SLOT_SIZE;
+                        offset += members[m].total_size_bytes;
+                    }
+                    struct_bytes = offset;
+                }
+                cg_structs = (StructInfo*)realloc(cg_structs, sizeof(StructInfo) * (cg_struct_count + 1));
+                cg_structs[cg_struct_count].type_name = n->typedef_struct.typedef_name;
+                cg_structs[cg_struct_count].members = members;
+                cg_structs[cg_struct_count].member_count = count;
+                cg_structs[cg_struct_count].size_bytes = struct_bytes > 0 ? struct_bytes : SLOT_SIZE;
+                cg_struct_count++;
+            } else if (n->type == AST_STRUCT && n->struct_stmt.name) {
+                int count = n->struct_stmt.member_count;
+                MemberInfo *members = NULL;
+                int struct_bytes = 0;
+                if (count > 0) {
+                    members = (MemberInfo*)malloc(sizeof(MemberInfo) * count);
+                    int offset = 0;
+                    for (int m = 0; m < count; m++) {
+                        ASTNode *mem = n->struct_stmt.members[m];
+                        const char *mname = "";
+                        LocalInfo tmp = {0};
+                        int member_slots = 1;
+                        if (mem->type == AST_VAR_DECL) {
+                            mname = mem->var_decl.name ? mem->var_decl.name : "";
+                            set_localinfo_from_type(&tmp, mem->var_decl.var_type);
+                            if (mem->var_decl.var_type) {
+                                member_slots = slots_for_type(mem->var_decl.var_type);
+                                if (member_slots < 1) member_slots = 1;
+                            }
+                        } else if (mem->type == AST_STRUCT_MEMBER) {
+                            mname = mem->struct_member.name ? mem->struct_member.name : "";
+                            tmp.base_type = mem->struct_member.type ? mem->struct_member.type : "";
+                            tmp.pointer_level = 0;
+                            tmp.is_array = 0;
+                            tmp.array_length = 0;
+                        } else {
+                            tmp.base_type = "";
+                            tmp.pointer_level = 0;
+                            tmp.is_array = 0;
+                            tmp.array_length = 0;
+                        }
+                        members[m].name = mname;
+                        members[m].base_type = tmp.base_type ? tmp.base_type : "";
+                        members[m].pointer_level = tmp.pointer_level;
+                        members[m].is_array = tmp.is_array;
+                        members[m].array_length = tmp.array_length;
+                        members[m].size_bytes = (tmp.pointer_level == 0 && !tmp.is_array && base_type_is_char(tmp.base_type)) ? 1 : SLOT_SIZE;
+                        members[m].offset = offset;
+                        members[m].total_size_bytes = member_slots * SLOT_SIZE;
+                        offset += members[m].total_size_bytes;
+                    }
+                    struct_bytes = offset;
+                }
+                cg_structs = (StructInfo*)realloc(cg_structs, sizeof(StructInfo) * (cg_struct_count + 1));
+                cg_structs[cg_struct_count].type_name = n->struct_stmt.name;
+                cg_structs[cg_struct_count].members = members;
+                cg_structs[cg_struct_count].member_count = count;
+                cg_structs[cg_struct_count].size_bytes = struct_bytes > 0 ? struct_bytes : SLOT_SIZE;
+                cg_struct_count++;
+            }
+        }
+    }
 
     // Output __START__ (main) first
     for (int i = 0; i < root->block.count; i++)
@@ -881,5 +1439,26 @@ char *codegen(ASTNode *root)
             gen_func(fn, &sb);
         }
     }
+    // Append data (string literals) at the end
+    if (cg_data_sb_inited) {
+        sb_append(&sb, "\n; data\n");
+        sb_append(&sb, "%s", cg_data_sb.buf);
+    }
+
+    // optional: free struct table memory (builder returns raw string; sb freed by caller)
+    if (cg_structs) {
+        for (int i = 0; i < cg_struct_count; i++) {
+            free(cg_structs[i].members);
+        }
+        free(cg_structs);
+        cg_structs = NULL;
+        cg_struct_count = 0;
+    }
+    // free string pool
+    if (cg_strings) {
+        for (int i = 0; i < cg_string_count; i++) { free(cg_strings[i].text); free(cg_strings[i].label); }
+        free(cg_strings); cg_strings = NULL; cg_string_count = 0;
+    }
+    if (cg_data_sb_inited) { sb_free(&cg_data_sb); cg_data_sb_inited = 0; }
     return sb_dump(&sb);
 }

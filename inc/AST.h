@@ -75,14 +75,14 @@ struct ASTNode {
         struct { ASTNode *expr; } ret;
         struct { ASTNode **stmts; int count; } block;
         struct { 
-            char *ret_type;
+            ASTNode *ret_type;
             char *name;
             ASTNode **params;
             int param_count;
             ASTNode *body;
         } fundef;
         struct {
-            char *type;
+            ASTNode *type;
             char *name;
         } param;
         struct {

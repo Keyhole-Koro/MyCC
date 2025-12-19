@@ -1,6 +1,5 @@
 #include "utils.h"
 
-#include <errno.h>
 #include <string.h>
 
 #ifdef _WIN32
@@ -51,9 +50,15 @@ static void ensure_outputs_dir(void) {
 #ifdef _WIN32
     _mkdir("tests\\outputs");
 #else
-    // Attempt to create; ignore EEXIST
-    if (mkdir("tests/outputs", 0777) != 0 && errno != EEXIST) {
-        perror("mkdir tests/outputs");
+    struct stat st;
+    if (stat("tests/outputs", &st) == 0) {
+        if (!S_ISDIR(st.st_mode)) {
+            fprintf(stderr, "Path tests/outputs exists and is not a directory\n");
+        }
+        return;
+    }
+    if (mkdir("tests/outputs", 0777) != 0) {
+        fprintf(stderr, "Failed to create directory tests/outputs\n");
     }
 #endif
 }
@@ -71,4 +76,3 @@ void saveOutput(const char *filePath, const char *content) {
     }
     fclose(f);
 }
-

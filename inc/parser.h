@@ -6,6 +6,8 @@
 
 ASTNode* parse_program(Token **cur);
 void print_ast(ASTNode *node, int indent);
+// Writes the AST to a FILE* instead of stdout.
+void fprint_ast(FILE *out, ASTNode *node, int indent);
 void free_ast(ASTNode *node);
 
 #endif

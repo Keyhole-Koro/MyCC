@@ -111,17 +111,17 @@ ASTNode *new_var_decl(ASTNode *type, char *name, ASTNode *init) {
     return node;
 }
 
-ASTNode* new_param(char *type, char *name) {
+ASTNode* new_param(ASTNode *type, char *name) {
     ASTNode *node = malloc(sizeof(ASTNode));
     node->type = AST_PARAM;
-    node->param.type = strdup(type);
+    node->param.type = type;
     node->param.name = strdup(name);
     return node;
 }
-ASTNode* new_fundef(char *ret_type, char *name, ASTNode **params, int param_count, ASTNode *body) {
+ASTNode* new_fundef(ASTNode *ret_type, char *name, ASTNode **params, int param_count, ASTNode *body) {
     ASTNode *node = malloc(sizeof(ASTNode));
     node->type = AST_FUNDEF;
-    node->fundef.ret_type = strdup(ret_type);
+    node->fundef.ret_type = ret_type;
     node->fundef.name = strdup(name);
     node->fundef.params = params;
     node->fundef.param_count = param_count;
@@ -572,6 +572,7 @@ ASTNode *parse_postfix(Token **cur) {
 }
 
 ASTNode *parse_unary(Token **cur) {
+    printf("parse_unary: cur kind = %s\n", tokenkind2str((*cur)->kind));
     if ((*cur)->kind == SUB) {
         *cur = (*cur)->next;
         return new_unary(SUB, parse_unary(cur));
@@ -708,7 +709,7 @@ ASTNode *parse_expr(Token **cur) {
 }
 
 ASTNode* parse_param(Token **cur) {
-    char *type = parse_type(cur);
+    ASTNode *type = parse_type(cur);
     if ((*cur)->kind != IDENTIFIER) parse_error("expected param name", token_head, *cur);
     char *name = (*cur)->value;
     *cur = (*cur)->next;
@@ -868,26 +869,13 @@ ASTNode *parse_stmt(Token **cur) {
 
     if ((*cur)->kind == L_BRACE) return parse_block(cur);
     if (is_type((*cur)->kind, *cur)) return parse_variable_declaration(cur, 1);
-    if (((*cur)->kind == IDENTIFIER && (*cur)->next && (*cur)->next->kind == ASSIGN) ||
-        ((*cur)->kind == ASTARISK   && (*cur)->next)) {
 
-        ASTNode *lhs = parse_unary(cur);  // *ptr or identifier
-        if (!expect(cur, ASSIGN))
-            parse_error("expected '='", token_head, *cur);
-
-        ASTNode *rhs = parse_expr(cur);
-
-        if (!expect(cur, SEMICOLON))
-            parse_error("expected ';' after assignment", token_head, *cur);
-
-        return new_assign(lhs, rhs);
-    }
-
+    printf("DEBUG: parse_stmt falling back to expr_stmt at token kind %s\n", tokenkind2str((*cur)->kind));
     return parse_expr_stmt(cur);
 }
 
 ASTNode* parse_fundef(Token **cur) {
-    char *ret_type = parse_type(cur);
+    ASTNode *ret_type = parse_type(cur);
     if ((*cur)->kind != IDENTIFIER) parse_error("expected function name", token_head, *cur);
     char *name = (*cur)->value;
     *cur = (*cur)->next;
@@ -1008,10 +996,9 @@ void print_ast(ASTNode *node, int indent) {
             print_ast(node->block.stmts[i], indent+1);
         break;
     case AST_FUNDEF:
-        INDENT; printf("Function: %s %s\n", node->fundef.ret_type, node->fundef.name);
+        INDENT; printf("Function:  %s\n", node->fundef.name);
         for (int i = 0; i < node->fundef.param_count; i++) {
-            INDENT; printf("  Param: %s %s\n",
-                node->fundef.params[i]->param.type,
+            INDENT; printf("  Param:  %s\n",
                 node->fundef.params[i]->param.name);
         }
         print_ast(node->fundef.body, indent+1);
@@ -1043,14 +1030,15 @@ void print_ast(ASTNode *node, int indent) {
         print_ast(node->for_stmt.body, indent+1);
         break;
     case AST_PARAM:
-        INDENT; printf("Param: %s %s\n", node->param.type, node->param.name);
+        INDENT; printf("Param:  %s\n", node->param.name);
         break;
     case AST_STRUCT:
         INDENT; printf("Struct: %s\n", node->struct_stmt.name);
         for (int i = 0; i < node->struct_stmt.member_count; i++) {
-            INDENT; printf("  Member: %s %s\n",
-                node->struct_stmt.members[i]->struct_member.type,
-                node->struct_stmt.members[i]->struct_member.name);
+            ASTNode *m = node->struct_stmt.members[i];
+            const char *n = (m->type == AST_STRUCT_MEMBER) ? m->struct_member.name :
+                             (m->type == AST_VAR_DECL) ? m->var_decl.name : "";
+            INDENT; printf("  Member:  %s\n", n);
         }
         break;
     case AST_TYPEDEF:
@@ -1064,20 +1052,20 @@ void print_ast(ASTNode *node, int indent) {
             node->struct_member.name);
         break;
     case AST_TYPEDEF_STRUCT:
-        INDENT; printf("TypedefStruct: %s -> %s\n",
-            node->typedef_struct.struct_name,
+        INDENT; printf("TypedefStruct:  -> %s\n",
             node->typedef_struct.typedef_name);
         for (int i = 0; i < node->typedef_struct.member_count; i++) {
-            INDENT; printf("  Member: %s %s\n",
-                node->typedef_struct.members[i]->struct_member.type,
-                node->typedef_struct.members[i]->struct_member.name);
+            ASTNode *m = node->typedef_struct.members[i];
+            const char *n = (m->type == AST_STRUCT_MEMBER) ? m->struct_member.name :
+                             (m->type == AST_VAR_DECL) ? m->var_decl.name : "";
+            INDENT; printf("  Member:  %s\n", n);
         }
         break;
     case AST_STRING_LITERAL:
         INDENT; printf("StringLiteral: \"%s\"\n", node->string_literal.value);
         break;
     case AST_CHAR_LITERAL:
-        INDENT; printf("CharLiteral: '%c'\n", node->char_literal.value);
+        INDENT; printf("CharLiteral: '%c'\n", node->char_literal.value ? node->char_literal.value[0] : '\0');
         break;
     case AST_MEMBER_ACCESS:
         INDENT; printf("MemberAccess: %s\n", node->member_access.member);
@@ -1095,6 +1083,177 @@ void print_ast(ASTNode *node, int indent) {
         break;
     default:
         INDENT; printf("Unknown AST Node Type: %d\n", node->type);
+    }
+    #undef INDENT
+}
+
+// Write AST to a FILE* (mirrors print_ast but targets a stream)
+void fprint_ast(FILE *out, ASTNode *node, int indent) {
+    if (!node) return;
+    #define INDENT for (int i = 0; i < indent; i++) fprintf(out, "  ")
+    switch (node->type) {
+    case AST_NUMBER:
+        INDENT; fprintf(out, "Number: %s\n", node->number.value);
+        break;
+    case AST_IDENTIFIER:
+        INDENT; fprintf(out, "Identifier: %s\n", node->identifier.name);
+        break;
+    case AST_BINARY:
+        INDENT; fprintf(out, "Binary: %s\n", tokenkind2str(node->binary.op));
+        fprint_ast(out, node->binary.left, indent+1);
+        fprint_ast(out, node->binary.right, indent+1);
+        break;
+    case AST_TYPE:
+        INDENT; fprintf(out, "Type:\n");
+        fprint_ast(out, node->type_node.base_type, indent+1);
+        INDENT; fprintf(out, "pointers: %d\n", node->type_node.pointer_level);
+        INDENT; fprintf(out, "modifiers:");
+        if (node->type_node.type_modifiers & TYPEMOD_CONST) fprintf(out, " const");
+        if (node->type_node.type_modifiers & TYPEMOD_UNSIGNED) fprintf(out, " unsigned");
+        if (node->type_node.type_modifiers & TYPEMOD_SIGNED) fprintf(out, " signed");
+        if (!(node->type_node.type_modifiers & (TYPEMOD_CONST|TYPEMOD_UNSIGNED|TYPEMOD_SIGNED))) fprintf(out, " none");
+        fprintf(out, "\n");
+        break;
+    case AST_TYPE_ARRAY:
+        INDENT; fprintf(out, "TypeArray: size=%d\n", node->type_array.array_size);
+        fprint_ast(out, node->type_array.element_type, indent+1);
+        break;
+    case AST_VAR_DECL:
+        INDENT; fprintf(out, "VarDecl:\n");
+        INDENT; fprintf(out, "  Type:\n");
+        fprint_ast(out, node->var_decl.var_type, indent+2);
+        INDENT; fprintf(out, "  Name: %s\n", node->var_decl.name);
+        if (node->var_decl.init) {
+            INDENT; fprintf(out, "  Init:\n");
+            fprint_ast(out, node->var_decl.init, indent+2);
+        }
+        break;
+    case AST_ASSIGN:
+        INDENT; fprintf(out, "Assign\n");
+        fprint_ast(out, node->assign.left, indent+1);
+        fprint_ast(out, node->assign.right, indent+1);
+        break;
+    case AST_UNARY:
+        INDENT;
+        switch (node->unary.op) {
+            case AMPERSAND: fprintf(out, "Unary: & (address)\n"); break;
+            case SUB: fprintf(out, "Unary: - (negate)\n"); break;
+            case INC: fprintf(out, "Unary: ++ (pre-increment)\n"); break;
+            case DEC: fprintf(out, "Unary: -- (pre-decrement)\n"); break;
+            case POST_INC: fprintf(out, "Unary: ++ (post-increment)\n"); break;
+            case POST_DEC: fprintf(out, "Unary: -- (post-decrement)\n"); break;
+            case ASTARISK: fprintf(out, "Unary: * (dereference)\n"); break;
+            default: fprintf(out, "Unary: %d\n", node->unary.op); break;
+        }
+        fprint_ast(out, node->unary.operand, indent+1);
+        break;
+    case AST_EXPR_STMT:
+        INDENT; fprintf(out, "ExprStmt\n");
+        fprint_ast(out, node->expr_stmt.expr, indent+1);
+        break;
+    case AST_IF:
+        INDENT; fprintf(out, "If\n");
+        fprint_ast(out, node->if_stmt.cond, indent+1);
+        fprint_ast(out, node->if_stmt.then_stmt, indent+1);
+        if (node->if_stmt.else_stmt) fprint_ast(out, node->if_stmt.else_stmt, indent+1);
+        break;
+    case AST_RETURN:
+        INDENT; fprintf(out, "Return\n");
+        fprint_ast(out, node->ret.expr, indent+1);
+        break;
+    case AST_BLOCK:
+        INDENT; fprintf(out, "Block\n");
+        for (int i = 0; i < node->block.count; i++)
+            fprint_ast(out, node->block.stmts[i], indent+1);
+        break;
+    case AST_FUNDEF:
+        INDENT; fprintf(out, "Function:  %s\n", node->fundef.name);
+        for (int i = 0; i < node->fundef.param_count; i++) {
+            INDENT; fprintf(out, "  Param:  %s\n",
+                node->fundef.params[i]->param.name);
+        }
+        fprint_ast(out, node->fundef.body, indent+1);
+        break;
+    case AST_CALL:
+        INDENT; fprintf(out, "Call: %s\n", node->call.name);
+        for (int i = 0; i < node->call.arg_count; i++)
+            fprint_ast(out, node->call.args[i], indent+1);
+        break;
+    case AST_WHILE:
+        INDENT; fprintf(out, "While\n");
+        fprint_ast(out, node->while_stmt.cond, indent+1);
+        fprint_ast(out, node->while_stmt.body, indent+1);
+        break;
+    case AST_FOR:
+        INDENT; fprintf(out, "For\n");
+        if (node->for_stmt.init) {
+            INDENT; fprintf(out, "  Init:\n");
+            fprint_ast(out, node->for_stmt.init, indent+2);
+        }
+        if (node->for_stmt.cond) {
+            INDENT; fprintf(out, "  Cond:\n");
+            fprint_ast(out, node->for_stmt.cond, indent+2);
+        }
+        if (node->for_stmt.inc) {
+            INDENT; fprintf(out, "  Inc:\n");
+            fprint_ast(out, node->for_stmt.inc, indent+2);
+        }
+        fprint_ast(out, node->for_stmt.body, indent+1);
+        break;
+    case AST_PARAM:
+        INDENT; fprintf(out, "Param:  %s\n", node->param.name);
+        break;
+    case AST_STRUCT:
+        INDENT; fprintf(out, "Struct: %s\n", node->struct_stmt.name);
+        for (int i = 0; i < node->struct_stmt.member_count; i++) {
+            ASTNode *m = node->struct_stmt.members[i];
+            const char *n = (m->type == AST_STRUCT_MEMBER) ? m->struct_member.name :
+                             (m->type == AST_VAR_DECL) ? m->var_decl.name : "";
+            INDENT; fprintf(out, "  Member:  %s\n", n);
+        }
+        break;
+    case AST_TYPEDEF:
+        INDENT; fprintf(out, "Typedef: %s\n", node->typedef_stmt.alias);
+        INDENT; fprintf(out, "  BaseType:\n");
+        fprint_ast(out, node->typedef_stmt.src_type, indent+2);
+        break;
+    case AST_STRUCT_MEMBER:
+        INDENT; fprintf(out, "StructMember: %s %s\n",
+            node->struct_member.type,
+            node->struct_member.name);
+        break;
+    case AST_TYPEDEF_STRUCT:
+        INDENT; fprintf(out, "TypedefStruct:  -> %s\n",
+            node->typedef_struct.typedef_name);
+        for (int i = 0; i < node->typedef_struct.member_count; i++) {
+            ASTNode *m = node->typedef_struct.members[i];
+            const char *n = (m->type == AST_STRUCT_MEMBER) ? m->struct_member.name :
+                             (m->type == AST_VAR_DECL) ? m->var_decl.name : "";
+            INDENT; fprintf(out, "  Member:  %s\n", n);
+        }
+        break;
+    case AST_STRING_LITERAL:
+        INDENT; fprintf(out, "StringLiteral: \"%s\"\n", node->string_literal.value);
+        break;
+    case AST_CHAR_LITERAL:
+        INDENT; fprintf(out, "CharLiteral: '%c'\n", node->char_literal.value ? node->char_literal.value[0] : '\\0');
+        break;
+    case AST_MEMBER_ACCESS:
+        INDENT; fprintf(out, "MemberAccess: %s\n", node->member_access.member);
+        fprint_ast(out, node->member_access.lhs, indent+1);
+        break;
+    case AST_ARROW_ACCESS:
+        INDENT; fprintf(out, "ArrowAccess: %s\n", node->arrow_access.member);
+        fprint_ast(out, node->arrow_access.lhs, indent+1);
+        break;
+    case AST_BREAK:
+        INDENT; fprintf(out, "Break\n");
+        break;
+    case AST_CONTINUE:
+        INDENT; fprintf(out, "Continue\n");
+        break;
+    default:
+        INDENT; fprintf(out, "Unknown AST Node Type: %d\n", node->type);
     }
     #undef INDENT
 }
@@ -1153,7 +1312,7 @@ void free_ast(ASTNode *node) {
             free(node->block.stmts);
             break;
         case AST_FUNDEF:
-            free(node->fundef.ret_type);
+            if (node->fundef.ret_type) free_ast(node->fundef.ret_type);
             free(node->fundef.name);
             for (int i = 0; i < node->fundef.param_count; i++)
                 free_ast(node->fundef.params[i]);
@@ -1167,7 +1326,7 @@ void free_ast(ASTNode *node) {
             free(node->call.args);
             break;
         case AST_PARAM:
-            free(node->param.type);
+            if (node->param.type) free_ast(node->param.type);
             free(node->param.name);
             break;
         case AST_STRUCT:

@@ -8,6 +8,23 @@
 #include "AST.h"
 #include "utils.h"
 
+static char *build_sidecar_path(const char *out_path, const char *suffix) {
+    if (!out_path || !suffix) return NULL;
+    const char *last_slash = strrchr(out_path, '/');
+    const char *last_back = strrchr(out_path, '\\');
+    const char *sep = last_slash > last_back ? last_slash : last_back;
+    const char *fname = sep ? sep + 1 : out_path;
+    const char *dot = strrchr(fname, '.');
+    size_t base_len = dot ? (size_t)(dot - out_path) : strlen(out_path);
+    size_t suff_len = strlen(suffix);
+    char *res = (char*)malloc(base_len + suff_len + 1);
+    if (!res) return NULL;
+    memcpy(res, out_path, base_len);
+    memcpy(res + base_len, suffix, suff_len);
+    res[base_len + suff_len] = '\0';
+    return res;
+}
+
 int main(int argc, char *argv[]) {
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <input.c> <output.asm>\n", argv[0]);
@@ -19,6 +36,7 @@ int main(int argc, char *argv[]) {
     char *input = readSampleInput(input_path);
 
     Token *tokens = lexer(input);
+    // Also print to console as before
     for (Token *t = tokens; t; t = t->next) {
         printf("Token: kind=%s, value=%s\n", tokenkind2str(t->kind), t->value ? t->value : "(null)");
     }
@@ -41,6 +59,38 @@ int main(int argc, char *argv[]) {
     printf("Code generation completed. Output saved to %s\n", output_path);
     
     free(output);
+
+    // Save lexer tokens and AST to sidecar .txt files next to the output
+    char *tokens_txt = build_sidecar_path(output_path, "_tokens.txt");
+    char *ast_txt = build_sidecar_path(output_path, "_ast.txt");
+
+    if (tokens_txt) {
+        FILE *tf = fopen(tokens_txt, "wb");
+        if (tf) {
+            for (Token *t = tokens; t; t = t->next) {
+                fprintf(tf, "Token: kind=%s, value=%s\n",
+                        tokenkind2str(t->kind), t->value ? t->value : "(null)");
+            }
+            fclose(tf);
+            printf("Tokens saved to %s\n", tokens_txt);
+        } else {
+            perror("Failed to save tokens.txt");
+        }
+    }
+
+    if (ast_txt) {
+        FILE *af = fopen(ast_txt, "wb");
+        if (af) {
+            fprint_ast(af, root, 0);
+            fclose(af);
+            printf("AST saved to %s\n", ast_txt);
+        } else {
+            perror("Failed to save ast.txt");
+        }
+    }
+
+    free(tokens_txt);
+    free(ast_txt);
 
     return 0;
 }
