@@ -519,6 +519,11 @@ static int infer_expr_type(ASTNode *expr, TypeInfo *out) {
         out->is_array = li->is_array;
         return 1;
     }
+    case AST_NUMBER:
+        out->base_type = "int";
+        out->pointer_level = 0;
+        out->is_array = 0;
+        return 1;
     case AST_MEMBER_ACCESS: {
         TypeInfo lhs;
         if (!infer_expr_type(expr->member_access.lhs, &lhs)) return 0;
@@ -542,6 +547,37 @@ static int infer_expr_type(ASTNode *expr, TypeInfo *out) {
         out->is_array = mi->is_array;
         if (mi->is_array) out->pointer_level += 1;
         return 1;
+    }
+    case AST_BINARY: {
+        TypeInfo lhs;
+        TypeInfo rhs;
+        if (!infer_expr_type(expr->binary.left, &lhs) ||
+            !infer_expr_type(expr->binary.right, &rhs)) {
+            return 0;
+        }
+
+        if (expr->binary.op == ADD || expr->binary.op == SUB) {
+            if (lhs.pointer_level > 0 && rhs.pointer_level == 0) {
+                *out = lhs;
+                return 1;
+            }
+            if (expr->binary.op == ADD && rhs.pointer_level > 0 && lhs.pointer_level == 0) {
+                *out = rhs;
+                return 1;
+            }
+            if (expr->binary.op == SUB && lhs.pointer_level > 0 && rhs.pointer_level > 0) {
+                out->base_type = "int";
+                out->pointer_level = 0;
+                out->is_array = 0;
+                return 1;
+            }
+        }
+
+        if (lhs.pointer_level == 0 && rhs.pointer_level == 0) {
+            *out = lhs;
+            return 1;
+        }
+        return 0;
     }
     case AST_UNARY:
         if (expr->unary.op == ASTARISK) {
@@ -1087,7 +1123,7 @@ static void _gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
     {
     case AST_STRING_LITERAL: {
         const char *label = intern_string_literal(node->string_literal.value ? node->string_literal.value : "");
-        sb_append(sb, "  mov  %s, %s\n", target_reg, label);
+        sb_append(sb, "  movi  %s, %s\n", target_reg, label);
         break; }
     case AST_CHAR_LITERAL: {
         unsigned char v = 0;
