@@ -42,6 +42,7 @@ int main(int argc, char *argv[]) {
     }
     free(input);
 
+    parser_set_filename(input_path);
     Token *cur = tokens;
     ASTNode *root = parse_program(&cur);
 

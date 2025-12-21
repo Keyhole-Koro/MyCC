@@ -6,6 +6,14 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+static void advance_pos(const char *start, size_t len, int *line, int *col) {
+    for (size_t i = 0; i < len; i++) {
+        char c = start[i];
+        if (c == '\n') { (*line)++; *col = 1; }
+        else (*col)++;
+    }
+}
+
 StringTokenKindMap operators[] = {
     {"==", EQ}, {"!=", NEQ}, {"<=", LTE}, {">=", GTE}, {"&&", LAND}, {"||", LOR},
     {"<<", LSH}, {">>", RSH}, {"++", INC}, {"--", DEC}, {"*", ASTARISK}, {"->", ARROW},
@@ -108,10 +116,12 @@ char *tokenkind2str(TokenKind kind) {
     return "UNKNOWN";
 }
 
-Token *createToken(Token *cur, int kind, char *value) {
+Token *createToken(Token *cur, int kind, char *value, int line, int col) {
     Token *newTk = malloc(sizeof(Token));
     newTk->kind = kind;
     newTk->value = strdup(value);
+    newTk->line = line;
+    newTk->col = col;
     newTk->next = NULL;
     cur->next = newTk;
     return newTk;
@@ -232,67 +242,95 @@ Token *lexer(char *input) {
     char *ptr = input;
     char buffer[256];
     TokenKind kind;
+    int line = 1;
+    int col = 1;
 
     while (*ptr) {
         buffer[0] = '\0';
 
-        if (isspace(*ptr)) { ptr++; continue; }
+        if (isspace(*ptr)) {
+            advance_pos(ptr, 1, &line, &col);
+            ptr++;
+            continue;
+        }
 
         if (isComment(ptr, buffer)) {
-            ptr += strlen(buffer);
-            while (*ptr && *ptr != '\n') ptr++;
-            if (*ptr == '\n') ptr++;
+            size_t consumed = strlen(buffer);
+            advance_pos(ptr, consumed, &line, &col);
+            ptr += consumed;
+            while (*ptr && *ptr != '\n') { advance_pos(ptr,1,&line,&col); ptr++; }
+            if (*ptr == '\n') { advance_pos(ptr,1,&line,&col); ptr++; }
             continue;
         }
 
         if (isCommentBlock(ptr, buffer)) {
-            ptr += strlen(buffer) + 4;
+            size_t consumed = strlen(buffer) + 4; // /* + content + */
+            advance_pos(ptr, consumed, &line, &col);
+            ptr += consumed;
             continue;
         }
 
         if (isOperator(ptr, &kind, buffer)) {
-            cur = createToken(cur, kind, buffer);
-            ptr += strlen(buffer);
+            int tok_line = line, tok_col = col;
+            size_t consumed = strlen(buffer);
+            cur = createToken(cur, kind, buffer, tok_line, tok_col);
+            advance_pos(ptr, consumed, &line, &col);
+            ptr += consumed;
             continue;
         }
 
         if (isReservedWord(ptr, &kind, buffer)) {
-            cur = createToken(cur, kind, buffer);
-            ptr += strlen(buffer);
+            int tok_line = line, tok_col = col;
+            size_t consumed = strlen(buffer);
+            cur = createToken(cur, kind, buffer, tok_line, tok_col);
+            advance_pos(ptr, consumed, &line, &col);
+            ptr += consumed;
             continue;
         }
 
         if (isNumber(ptr, buffer)) {
-            cur = createToken(cur, NUMBER, buffer);
-            ptr += strlen(buffer);
+            int tok_line = line, tok_col = col;
+            size_t consumed = strlen(buffer);
+            cur = createToken(cur, NUMBER, buffer, tok_line, tok_col);
+            advance_pos(ptr, consumed, &line, &col);
+            ptr += consumed;
             continue;
         }
 
         if (isIdentifier(ptr, buffer)) {
-            cur = createToken(cur, IDENTIFIER, buffer);
-            ptr += strlen(buffer);
+            int tok_line = line, tok_col = col;
+            size_t consumed = strlen(buffer);
+            cur = createToken(cur, IDENTIFIER, buffer, tok_line, tok_col);
+            advance_pos(ptr, consumed, &line, &col);
+            ptr += consumed;
             continue;
         }
 
         if (isStringLiteral(ptr, buffer)) {
-            ptr += strlen(buffer);
+            int tok_line = line, tok_col = col;
+            size_t consumed = strlen(buffer);
+            ptr += consumed;
+            advance_pos(ptr - consumed, consumed, &line, &col);
 
             memmove(buffer, buffer + 1, strlen(buffer) - 2); // Remove quotes
             buffer[strlen(buffer) - 2] = '\0';
-            cur = createToken(cur, STRING_LITERAL, buffer);
+            cur = createToken(cur, STRING_LITERAL, buffer, tok_line, tok_col);
             continue;
         }
 
         int len;
         if ((len = isCharLiteral(ptr, buffer)) > 0) {
-            cur = createToken(cur, CHAR_LITERAL, buffer);
+            int tok_line = line, tok_col = col;
+            cur = createToken(cur, CHAR_LITERAL, buffer, tok_line, tok_col);
+            advance_pos(ptr, (size_t)len, &line, &col);
             ptr += len;
             continue;
         }
 
+        advance_pos(ptr, 1, &line, &col);
         ptr++;
     }
 
-    createToken(cur, EOT, "");
+    createToken(cur, EOT, "", line, col);
     return head.next;
 }

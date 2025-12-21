@@ -98,6 +98,8 @@ typedef struct Token Token;
 struct Token{
   TokenKind kind;
   char *value;
+  int line;
+  int col;
   Token *next;
 };
 

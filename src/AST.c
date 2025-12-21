@@ -29,6 +29,7 @@ char *astType2str(ASTNodeType type) {
         case AST_ARROW_ACCESS: return "AST_ARROW_ACCESS";
         case AST_BREAK: return "AST_BREAK";
         case AST_CONTINUE: return "AST_CONTINUE";
+        case AST_INIT_LIST: return "AST_INIT_LIST";
     }
     return "<unknown>";
 }

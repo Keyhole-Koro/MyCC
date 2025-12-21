@@ -31,6 +31,7 @@ typedef enum {
     AST_ARROW_ACCESS,
     AST_BREAK,
     AST_CONTINUE,
+    AST_INIT_LIST,
 } ASTNodeType;
 
 typedef enum {
@@ -134,6 +135,10 @@ struct ASTNode {
             ASTNode *lhs;
             char *member; // member name
         } arrow_access;
+        struct {
+            ASTNode **elements;
+            int count;
+        } init_list;
     };
 };
 

@@ -40,6 +40,9 @@ void add_function(ASTNode *fn) {
     g_func_table.funcs[g_func_table.count++] = fn;
 }
 
+static const char *g_parse_filename = NULL;
+void parser_set_filename(const char *name) { g_parse_filename = name; }
+
 ASTNode* find_function(const char *name) {
     for (int i = 0; i < g_func_table.count; i++) {
         if (strcmp(g_func_table.funcs[i]->fundef.name, name) == 0) {
@@ -228,6 +231,14 @@ ASTNode *new_struct_member(char *type, char *name) {
     return node;
 }
 
+ASTNode *new_init_list(ASTNode **elems, int count) {
+    ASTNode *node = malloc(sizeof(ASTNode));
+    node->type = AST_INIT_LIST;
+    node->init_list.elements = elems;
+    node->init_list.count = count;
+    return node;
+}
+
 ASTNode *new_while(ASTNode *cond, ASTNode *body) {
     ASTNode *node = malloc(sizeof(ASTNode));
     node->type = AST_WHILE;
@@ -288,50 +299,69 @@ ASTNode *new_call(char *name, ASTNode **args, int arg_count) {
     return node;
 }
 
-void parse_error(const char *msg, Token *head, Token *cur) {
-    print_ast(root, 0);
-    // prevs[2] ... prevs[0] ... cur ... nexts[0] ... nexts[2]
-    Token *prevs[3] = {NULL, NULL, NULL};
-    Token *nexts[3] = {NULL, NULL, NULL};
+static void print_line_snippet(const char *file, int line, int col) {
+    if (!file || line <= 0) return;
+    FILE *fp = fopen(file, "r");
+    if (!fp) return;
+    char buf[512];
+    int cur_line = 1;
+    while (fgets(buf, sizeof(buf), fp)) {
+        if (cur_line == line) {
+            size_t len = strlen(buf);
+            while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r')) buf[--len] = '\0';
+            fprintf(stderr, "  %s\n", buf);
+            if (col > 0) fprintf(stderr, "  %*s^\n", col, "");
+            break;
+        }
+        cur_line++;
+    }
+    fclose(fp);
+}
 
-    Token *p = head, *prev = NULL;
+void parse_error(const char *msg, Token *head, Token *cur) {
+    fprintf(stderr, "%s:%d:%d: error: %s\n",
+            g_parse_filename ? g_parse_filename : "<input>",
+            cur ? cur->line : 0,
+            cur ? cur->col : 0,
+            msg);
+    if (cur) print_line_snippet(g_parse_filename, cur->line, cur->col);
+
+    // Print a small window of surrounding tokens for context
+    Token *prevs[2] = {NULL, NULL};
+    Token *nexts[2] = {NULL, NULL};
+
+    Token *p = head;
     while (p && p != cur) {
-        prev = p;
+        prevs[1] = prevs[0];
+        prevs[0] = p;
         p = p->next;
     }
-    for (int i = 2; i >= 0; i--) {
-        prevs[i] = prev;
-        if (prev) prev = head;
-        Token *tmp = head;
-        while (tmp && tmp != prevs[i]) {
-            prev = tmp;
-            tmp = tmp->next;
-        }
-    }
-
     Token *q = cur;
-    for (int i = 0; i < 3 && q; i++) {
+    for (int i = 0; i < 2 && q; i++) {
         q = q->next;
         nexts[i] = q;
     }
 
-    fprintf(stderr, "Parse error: %s\n", msg);
-
-    for (int i = 2; i >= 0; i--) {
-        if (prevs[i])
-            fprintf(stderr, "  [prev-%d] kind: %s, value: %s\n",
-                3-i, tokenkind2str(prevs[i]->kind),
-                prevs[i]->value ? prevs[i]->value : "(null)");
-    }
-    fprintf(stderr, "  [here] kind: %s, value: %s\n",
-            cur ? tokenkind2str(cur->kind) : "(null)",
-            cur && cur->value ? cur->value : "(null)");
-    for (int i = 0; i < 3; i++) {
-        if (nexts[i])
-            fprintf(stderr, "  [next+%d] kind: %s, value: %s\n",
-                i+1, tokenkind2str(nexts[i]->kind),
-                nexts[i]->value ? nexts[i]->value : "(null)");
-    }
+    if (prevs[1])
+        fprintf(stderr, "  prev-2: kind=%s, value=%s (l%d c%d)\n",
+                tokenkind2str(prevs[1]->kind),
+                prevs[1]->value ? prevs[1]->value : "(null)",
+                prevs[1]->line, prevs[1]->col);
+    if (prevs[0])
+        fprintf(stderr, "  prev-1: kind=%s, value=%s (l%d c%d)\n",
+                tokenkind2str(prevs[0]->kind),
+                prevs[0]->value ? prevs[0]->value : "(null)",
+                prevs[0]->line, prevs[0]->col);
+    if (nexts[0])
+        fprintf(stderr, "  next+1: kind=%s, value=%s (l%d c%d)\n",
+                tokenkind2str(nexts[0]->kind),
+                nexts[0]->value ? nexts[0]->value : "(null)",
+                nexts[0]->line, nexts[0]->col);
+    if (nexts[1])
+        fprintf(stderr, "  next+2: kind=%s, value=%s (l%d c%d)\n",
+                tokenkind2str(nexts[1]->kind),
+                nexts[1]->value ? nexts[1]->value : "(null)",
+                nexts[1]->line, nexts[1]->col);
     exit(1);
 }
 int expect(Token **cur, TokenKind kind) {
@@ -809,6 +839,26 @@ ASTNode *parse_expr_stmt(Token **cur) {
     if (!expect(cur, SEMICOLON)) parse_error("expected ';' after expression", token_head, *cur);
     return new_expr_stmt(expr);
 }
+
+static ASTNode *parse_init_list(Token **cur) {
+    if (!expect(cur, L_BRACE)) parse_error("expected '{' for initializer list", token_head, *cur);
+    ASTNode **elems = NULL;
+    int count = 0;
+    if ((*cur)->kind != R_BRACE) {
+        while (1) {
+            ASTNode *e = parse_expr(cur);
+            elems = realloc(elems, sizeof(ASTNode*) * (count + 1));
+            elems[count++] = e;
+            if ((*cur)->kind == COMMA) {
+                *cur = (*cur)->next;
+                continue;
+            }
+            break;
+        }
+    }
+    if (!expect(cur, R_BRACE)) parse_error("expected '}' to close initializer list", token_head, *cur);
+    return new_init_list(elems, count);
+}
 ASTNode *parse_variable_declaration(Token **cur, int need_semicolon) {
     ASTNode *type = parse_type(cur);
     if ((*cur)->kind != IDENTIFIER)
@@ -830,7 +880,19 @@ ASTNode *parse_variable_declaration(Token **cur, int need_semicolon) {
 
     ASTNode *init = NULL;
     if (expect(cur, ASSIGN)) {
-        init = parse_expr(cur);
+        if ((*cur)->kind == L_BRACE) {
+            init = parse_init_list(cur);
+        } else {
+            init = parse_expr(cur);
+        }
+        if (final_type && final_type->type == AST_TYPE_ARRAY && final_type->type_array.array_size <= 0) {
+            if (init && init->type == AST_STRING_LITERAL) {
+                int inferred = (int)strlen(init->string_literal.value) + 1; // include NUL
+                final_type->type_array.array_size = inferred;
+            } else if (init && init->type == AST_INIT_LIST) {
+                final_type->type_array.array_size = init->init_list.count;
+            }
+        }
     }
     if (need_semicolon) {
         if (!expect(cur, SEMICOLON))
@@ -1075,6 +1137,12 @@ void print_ast(ASTNode *node, int indent) {
         INDENT; printf("ArrowAccess: %s\n", node->arrow_access.member);
         print_ast(node->arrow_access.lhs, indent+1);
         break;
+    case AST_INIT_LIST:
+        INDENT; printf("InitList:\n");
+        for (int i = 0; i < node->init_list.count; i++) {
+            print_ast(node->init_list.elements[i], indent+1);
+        }
+        break;
     case AST_BREAK:
         INDENT; printf("Break\n");
         break;
@@ -1246,6 +1314,12 @@ void fprint_ast(FILE *out, ASTNode *node, int indent) {
         INDENT; fprintf(out, "ArrowAccess: %s\n", node->arrow_access.member);
         fprint_ast(out, node->arrow_access.lhs, indent+1);
         break;
+    case AST_INIT_LIST:
+        INDENT; fprintf(out, "InitList:\n");
+        for (int i = 0; i < node->init_list.count; i++) {
+            fprint_ast(out, node->init_list.elements[i], indent+1);
+        }
+        break;
     case AST_BREAK:
         INDENT; fprintf(out, "Break\n");
         break;
@@ -1357,6 +1431,11 @@ void free_ast(ASTNode *node) {
         case AST_ARROW_ACCESS:
             free(node->arrow_access.member);
             free_ast(node->arrow_access.lhs);
+            break;
+        case AST_INIT_LIST:
+            for (int i = 0; i < node->init_list.count; i++)
+                free_ast(node->init_list.elements[i]);
+            free(node->init_list.elements);
             break;
         case AST_WHILE:
             free_ast(node->while_stmt.cond);
