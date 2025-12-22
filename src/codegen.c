@@ -25,15 +25,19 @@ typedef struct {
 typedef struct {
     const char *name;       // variable name
     const char *base_type;  // type name (typedef/struct)
-    int pointer_level;      // pointer level from AST
+    int pointer_level;      // explicit pointer level (excludes array levels)
     int is_array;           // whether the declaration was an array
-    int array_length;       // first dimension length if array
+    int array_length;       // first dimension length if array (legacy)
+    int dims[8];            // array dimensions outer->inner (unknown => 0)
+    int dims_count;
 } LocalInfo;
 
 typedef struct {
     const char *base_type;
     int pointer_level;
     int is_array;
+    int dims[8];
+    int dims_count;
 } TypeInfo;
 
 // ---- String literal pool ----
@@ -52,24 +56,19 @@ typedef struct {
     int string_count;
     StringBuilder data_sb; // holds emitted data bytes
     int data_sb_inited;
+    int label_counter;
 } CompilerContext;
 
-static CompilerContext global_cc;
+#define cg_structs       (cc->structs)
+#define cg_struct_count  (cc->struct_count)
+#define cg_locals_info   (cc->locals_info)
+#define cg_locals_count  (cc->locals_count)
+#define cg_strings       (cc->strings)
+#define cg_string_count  (cc->string_count)
+#define cg_data_sb       (cc->data_sb)
+#define cg_data_sb_inited (cc->data_sb_inited)
 
-static CompilerContext *get_cc(void) {
-    return &global_cc;
-}
-
-#define cg_structs       (get_cc()->structs)
-#define cg_struct_count  (get_cc()->struct_count)
-#define cg_locals_info   (get_cc()->locals_info)
-#define cg_locals_count  (get_cc()->locals_count)
-#define cg_strings       (get_cc()->strings)
-#define cg_string_count  (get_cc()->string_count)
-#define cg_data_sb       (get_cc()->data_sb)
-#define cg_data_sb_inited (get_cc()->data_sb_inited)
-
-static const char *intern_string_literal(const char *s)
+static const char *intern_string_literal(CompilerContext *cc, const char *s)
 {
     // deduplicate
     for (int i = 0; i < cg_string_count; i++) {
@@ -101,6 +100,10 @@ static const char *intern_string_literal(const char *s)
     return it.label;
 }
 
+static int next_label(CompilerContext *cc) {
+    return cc->label_counter++;
+}
+
 // Argument registers for first three args
 static const char *arg_regs[] = {"r5", "r6", "r7"};
 
@@ -128,65 +131,60 @@ static int local_index_last(const char *name, char **locals, int local_count)
     }
     return idx;
 }
-// Find local index by name, or -1
-static int local_index(const char *name, char **locals, int local_count)
-{
-    return local_index_last(name, locals, local_count);
-}
 
-static const LocalInfo *find_local_info(const char *name);
+static const LocalInfo *find_local_info(CompilerContext *cc, const char *name);
 
-static const StructInfo *find_struct(const char *type_name);
+static const StructInfo *find_struct(CompilerContext *cc, const char *type_name);
 
-static void gen_lvalue_addr(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void gen_lvalue_addr(CompilerContext *cc, ASTNode *node, StringBuilder *sb, const char *target_reg,
                             char **params, int param_count,
                             char **locals, int local_count);
                             
-static void gen_stmt(ASTNode *node, StringBuilder *sb,
+static void gen_stmt(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
     char **params, int param_count,
     char **locals, int local_count);
 
-static void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
+static void gen_stmt_internal(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
     char **params, int param_count,
     char **locals, int local_count,
     const char *break_label,
     const char *continue_label);
 
 // Internal function prototypes (used before their definitions)
-static void emit_load_var(StringBuilder *sb, const char *name, const char *target_reg,
+static void emit_load_var(CompilerContext *cc, StringBuilder *sb, const char *name, const char *target_reg,
                           char **params, int param_count,
                           char **locals, int local_count);
-static void emit_store_var(StringBuilder *sb, const char *name, const char *src_reg,
+static void emit_store_var(CompilerContext *cc, StringBuilder *sb, const char *name, const char *src_reg,
                            char **params, int param_count,
                            char **locals, int local_count);
 static void emit_store_to_addr(StringBuilder *sb, const char *addr_reg, const char *value_reg, int is_byte);
-static void emit_addr_of_var(StringBuilder *sb, const char *name, const char *target_reg,
+static void emit_addr_of_var(CompilerContext *cc, StringBuilder *sb, const char *name, const char *target_reg,
                              char **params, int param_count, char **locals, int local_count);
-static void emit_cond_jump(ASTNode *left, ASTNode *right, TokenKind op, StringBuilder *sb,
+static void emit_cond_jump(CompilerContext *cc, ASTNode *left, ASTNode *right, TokenKind op, StringBuilder *sb,
                            char **params, int param_count, char **locals, int local_count,
                            const char *trueLabel, const char *falseLabel);
-static void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void gen_expr(CompilerContext *cc, ASTNode *node, StringBuilder *sb, const char *target_reg,
                      char **params, int param_count,
                      char **locals, int local_count);
-static void _gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void _gen_expr(CompilerContext *cc, ASTNode *node, StringBuilder *sb, const char *target_reg,
                       char **params, int param_count,
                       char **locals, int local_count,
                       int load_value);
-static void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void gen_expr_binop(CompilerContext *cc, ASTNode *node, StringBuilder *sb, const char *target_reg,
                            char **params, int param_count, char **locals, int local_count);
-static void gen_call(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void gen_call(CompilerContext *cc, ASTNode *node, StringBuilder *sb, const char *target_reg,
                      char **params, int param_count, char **locals, int local_count);
-static void gen_if(ASTNode *node, StringBuilder *sb,
+static void gen_if(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
                    char **params, int param_count,
                    char **locals, int local_count,
                    const char *break_label,
                    const char *continue_label);
-static void gen_for(ASTNode *node, StringBuilder *sb,
+static void gen_for(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
                     char **params, int param_count,
                     char **locals, int local_count,
                     const char *break_label,
                     const char *continue_label);
-static void gen_while(ASTNode *node, StringBuilder *sb,
+static void gen_while(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
                       char **params, int param_count,
                       char **locals, int local_count,
                       const char *break_label,
@@ -194,22 +192,24 @@ static void gen_while(ASTNode *node, StringBuilder *sb,
 static void set_localinfo_from_type(LocalInfo *info, ASTNode *type_node);
 static int base_type_is_char(const char *name);
 static int typeinfo_is_byte(const TypeInfo *info);
-static int infer_expr_type(ASTNode *expr, TypeInfo *out);
-static int pointer_step_bytes(const TypeInfo *info);
+static int infer_expr_type(CompilerContext *cc, ASTNode *expr, TypeInfo *out);
+static int pointer_step_bytes(CompilerContext *cc, const TypeInfo *info);
+static int typeinfo_elem_size_bytes(CompilerContext *cc, const TypeInfo *info);
+static int typeinfo_total_size_bytes(CompilerContext *cc, const TypeInfo *info);
 // Char/byte and struct helpers (forward decls)
-static const StructInfo *find_struct(const char *type_name);
-static const MemberInfo *find_member_info(const char *type_name, const char *member);
-static int is_char_scalar_var(const char *name);
-static int lvalue_is_byte(ASTNode *node);
+static const MemberInfo *find_member_info(CompilerContext *cc, const char *type_name, const char *member);
+static int is_char_scalar_var(CompilerContext *cc, const char *name);
+static int lvalue_is_byte(CompilerContext *cc, ASTNode *node);
 static void emit_load_from_addr(StringBuilder *sb, const char *target_reg, const char *addr_reg, int is_byte);
 static void emit_store_to_addr(StringBuilder *sb, const char *addr_reg, const char *value_reg, int is_byte);
+static void emit_scale_reg_const(CompilerContext *cc, StringBuilder *sb, const char *reg, long factor);
 
 // Recursively collect all local variable names in the block and its nested statements
-static int slots_for_type(ASTNode *type_node)
+static int slots_for_type(CompilerContext *cc, ASTNode *type_node)
 {
     if (!type_node) return 1;
     if (type_node->type == AST_TYPE_ARRAY) {
-        int elem = slots_for_type(type_node->type_array.element_type);
+        int elem = slots_for_type(cc, type_node->type_array.element_type);
         int n = type_node->type_array.array_size;
         if (n <= 0) n = 1;
         return elem * n;
@@ -218,7 +218,7 @@ static int slots_for_type(ASTNode *type_node)
         if (type_node->type_node.pointer_level > 0) return 1;
         ASTNode *bt = type_node->type_node.base_type;
         if (bt && bt->type == AST_IDENTIFIER) {
-            const StructInfo *si = find_struct(bt->identifier.name);
+            const StructInfo *si = find_struct(cc, bt->identifier.name);
             if (si) {
                 if (si->size_bytes > 0)
                     return (si->size_bytes + SLOT_SIZE - 1) / SLOT_SIZE;
@@ -230,7 +230,7 @@ static int slots_for_type(ASTNode *type_node)
     return 1;
 }
 
-static int collect_locals(ASTNode *node, char **locals)
+static int collect_locals(CompilerContext *cc, ASTNode *node, char **locals)
 {
     int count = 0;
     if (!node)
@@ -240,11 +240,11 @@ static int collect_locals(ASTNode *node, char **locals)
     case AST_BLOCK:
         for (int i = 0; i < node->block.count; i++)
         {
-            count += collect_locals(node->block.stmts[i], locals + count);
+            count += collect_locals(cc, node->block.stmts[i], locals + count);
         }
         break;
     case AST_VAR_DECL: {
-        int slots = slots_for_type(node->var_decl.var_type);
+        int slots = slots_for_type(cc, node->var_decl.var_type);
         if (slots < 1) slots = 1;
         for (int s = 0; s < slots; s++) {
             locals[count++] = node->var_decl.name;
@@ -253,18 +253,18 @@ static int collect_locals(ASTNode *node, char **locals)
     case AST_FOR:
         // Collect locals from the init part (e.g. for (int i = ...))
         if (node->for_stmt.init)
-            count += collect_locals(node->for_stmt.init, locals + count);
+            count += collect_locals(cc, node->for_stmt.init, locals + count);
         // Collect from body and inc, just in case there are decls there too
         if (node->for_stmt.body)
-            count += collect_locals(node->for_stmt.body, locals + count);
+            count += collect_locals(cc, node->for_stmt.body, locals + count);
         if (node->for_stmt.inc)
-            count += collect_locals(node->for_stmt.inc, locals + count);
+            count += collect_locals(cc, node->for_stmt.inc, locals + count);
         break;
     case AST_IF:
         if (node->if_stmt.then_stmt)
-            count += collect_locals(node->if_stmt.then_stmt, locals + count);
+            count += collect_locals(cc, node->if_stmt.then_stmt, locals + count);
         if (node->if_stmt.else_stmt)
-            count += collect_locals(node->if_stmt.else_stmt, locals + count);
+            count += collect_locals(cc, node->if_stmt.else_stmt, locals + count);
         break;
     // Add other cases (AST_WHILE, AST_BLOCK, etc.) if needed
     default:
@@ -298,7 +298,7 @@ static int find_var_offset(const char *name, char **params, int param_count,
     return 0;
 }
 
-static void emit_unary_inc_dec(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void emit_unary_inc_dec(CompilerContext *cc, ASTNode *node, StringBuilder *sb, const char *target_reg,
                         char **params, int param_count,
                         char **locals, int local_count)
 {
@@ -308,15 +308,15 @@ static void emit_unary_inc_dec(ASTNode *node, StringBuilder *sb, const char *tar
     }
 
     // Compute address of operand lvalue into r3
-    gen_lvalue_addr(node->unary.operand, sb, "r3", params, param_count, locals, local_count);
-    int is_byte = lvalue_is_byte(node->unary.operand);
+    gen_lvalue_addr(cc, node->unary.operand, sb, "r3", params, param_count, locals, local_count);
+    int is_byte = lvalue_is_byte(cc, node->unary.operand);
     // Load current value into r1
     emit_load_from_addr(sb, "r1", "r3", is_byte);
 
     int delta = 1;
-    TypeInfo operand_type;
-    if (infer_expr_type(node->unary.operand, &operand_type) && operand_type.pointer_level > 0) {
-        delta = pointer_step_bytes(&operand_type);
+    TypeInfo operand_type = (TypeInfo){0};
+    if (infer_expr_type(cc, node->unary.operand, &operand_type) && operand_type.pointer_level > 0) {
+        delta = pointer_step_bytes(cc, &operand_type);
     }
 
     switch (node->unary.op) {
@@ -352,14 +352,14 @@ static void emit_unary_inc_dec(ASTNode *node, StringBuilder *sb, const char *tar
 }
 
 // Emit code to load variable (param/local/global) to target_reg
-static void emit_load_var(StringBuilder *sb, const char *name, const char *target_reg,
+static void emit_load_var(CompilerContext *cc, StringBuilder *sb, const char *name, const char *target_reg,
                    char **params, int param_count,
                    char **locals, int local_count)
 {
-    const LocalInfo *li_info = find_local_info(name);
+    const LocalInfo *li_info = find_local_info(cc, name);
     if (li_info && li_info->is_array) {
         // arrays decay to pointers
-        emit_addr_of_var(sb, name, target_reg, params, param_count, locals, local_count);
+        emit_addr_of_var(cc, sb, name, target_reg, params, param_count, locals, local_count);
         return;
     }
 
@@ -374,7 +374,7 @@ static void emit_load_var(StringBuilder *sb, const char *name, const char *targe
             sb_append(sb, "  \n; load param '%s' (arg%d, reg) into %s\n", name, idx + 1, target_reg);
             sb_append(sb, "  mov   r3, bp\n");
             sb_append(sb, "  addis r3, %d\n", offset);
-            emit_load_from_addr(sb, target_reg, "r3", is_char_scalar_var(name));
+            emit_load_from_addr(sb, target_reg, "r3", is_char_scalar_var(cc, name));
         }
         else
         {
@@ -383,7 +383,7 @@ static void emit_load_var(StringBuilder *sb, const char *name, const char *targe
             sb_append(sb, "  \n; load param '%s' (arg%d, stack) into %s\n", name, idx + 1, target_reg);
             sb_append(sb, "  mov   r3, bp\n");
             sb_append(sb, "  addis r3, %d\n", offset);
-            emit_load_from_addr(sb, target_reg, "r3", is_char_scalar_var(name));
+            emit_load_from_addr(sb, target_reg, "r3", is_char_scalar_var(cc, name));
         }
     }
     else
@@ -396,7 +396,7 @@ static void emit_load_var(StringBuilder *sb, const char *name, const char *targe
             sb_append(sb, "  \n; load local '%s' into %s\n", name, target_reg);
             sb_append(sb, "  mov   r3, bp\n");
             sb_append(sb, "  addis r3, %d\n", offset);
-            emit_load_from_addr(sb, target_reg, "r3", is_char_scalar_var(name));
+            emit_load_from_addr(sb, target_reg, "r3", is_char_scalar_var(cc, name));
         }
         else
         {
@@ -408,7 +408,7 @@ static void emit_load_var(StringBuilder *sb, const char *name, const char *targe
 }
 
 // Emit code to store target_reg to variable (param/local/global)
-static void emit_store_var(StringBuilder *sb, const char *name, const char *src_reg,
+static void emit_store_var(CompilerContext *cc, StringBuilder *sb, const char *name, const char *src_reg,
                     char **params, int param_count,
                     char **locals, int local_count)
 {
@@ -419,7 +419,7 @@ static void emit_store_var(StringBuilder *sb, const char *name, const char *src_
         sb_append(sb, "  \n; store %s to var '%s'\n", src_reg, name);
         sb_append(sb, "  mov   r3, bp\n");
         sb_append(sb, "  addis r3, %d\n", offset);
-        emit_store_to_addr(sb, "r3", src_reg, is_char_scalar_var(name));
+        emit_store_to_addr(sb, "r3", src_reg, is_char_scalar_var(cc, name));
     }
     else
     {
@@ -429,13 +429,13 @@ static void emit_store_var(StringBuilder *sb, const char *name, const char *src_
     }
 }
 
-static void emit_addr_of_var(StringBuilder *sb, const char *name, const char *target_reg,
+static void emit_addr_of_var(CompilerContext *cc, StringBuilder *sb, const char *name, const char *target_reg,
                       char **params, int param_count, char **locals, int local_count)
 {
     int is_param = 0;
     int offset = find_var_offset(name, params, param_count, locals, local_count, &is_param);
     if (is_param == 0) {
-        const LocalInfo *li = find_local_info(name);
+        const LocalInfo *li = find_local_info(cc, name);
         int occur = 0;
         for (int i = 0; i < local_count; i++) {
             if (locals[i] && strcmp(locals[i], name) == 0) occur++;
@@ -460,13 +460,13 @@ static void emit_addr_of_var(StringBuilder *sb, const char *name, const char *ta
 // If the condition is true, jump to `trueLabel`
 // If the condition is false, jump to `falseLabel` (optional)
 // Supported operators: ==, !=, <, >, <=, >= using basic jz, jnz, jl, jg
-static void emit_cond_jump(ASTNode *left, ASTNode *right, TokenKind op, StringBuilder *sb,
+static void emit_cond_jump(CompilerContext *cc, ASTNode *left, ASTNode *right, TokenKind op, StringBuilder *sb,
                     char **params, int param_count, char **locals, int local_count,
                     const char *trueLabel, const char *falseLabel)
 {
     // Generate left and right expressions into r2 and r3
-    gen_expr(left, sb, "r2", params, param_count, locals, local_count);
-    gen_expr(right, sb, "r3", params, param_count, locals, local_count);
+    gen_expr(cc, left, sb, "r2", params, param_count, locals, local_count);
+    gen_expr(cc, right, sb, "r3", params, param_count, locals, local_count);
     sb_append(sb, "  cmp r2, r3\n");
 
     // Emit jump instructions based on operator
@@ -512,22 +512,20 @@ static void emit_cond_jump(ASTNode *left, ASTNode *right, TokenKind op, StringBu
 }
 
 // gen_expr: output result to target_reg (should be r5/r6/r7)
-static void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void gen_expr(CompilerContext *cc, ASTNode *node, StringBuilder *sb, const char *target_reg,
               char **params, int param_count,
               char **locals, int local_count);
 
-static int label_count = 0;
-
 // ---- Struct support helpers ----
-static const StructInfo *find_struct(const char *type_name) {
+static const StructInfo *find_struct(CompilerContext *cc, const char *type_name) {
     for (int i = 0; i < cg_struct_count; i++) {
         if (strcmp(cg_structs[i].type_name, type_name) == 0) return &cg_structs[i];
     }
     return NULL;
 }
 
-static const MemberInfo *find_member_info(const char *type_name, const char *member) {
-    const StructInfo *si = find_struct(type_name);
+static const MemberInfo *find_member_info(CompilerContext *cc, const char *type_name, const char *member) {
+    const StructInfo *si = find_struct(cc, type_name);
     if (!si) return NULL;
     for (int i = 0; i < si->member_count; i++)
         if (strcmp(si->members[i].name, member) == 0) return &si->members[i];
@@ -547,63 +545,84 @@ static int ast_type_is_char_scalar(ASTNode *type_node) {
     return 0;
 }
 
-static int is_char_scalar_var(const char *name) {
-    const LocalInfo *li = find_local_info(name);
+static int is_char_scalar_var(CompilerContext *cc, const char *name) {
+    const LocalInfo *li = find_local_info(cc, name);
     return (li && li->pointer_level == 0 && !li->is_array && base_type_is_char(li->base_type));
 }
 
 static int typeinfo_is_byte(const TypeInfo *info) {
-    return info && info->pointer_level == 0 && base_type_is_char(info->base_type);
+    return info && info->pointer_level == 0 && info->dims_count == 0 && base_type_is_char(info->base_type);
 }
 
-static int infer_expr_type(ASTNode *expr, TypeInfo *out) {
+static int infer_expr_type(CompilerContext *cc, ASTNode *expr, TypeInfo *out) {
     if (!expr || !out) return 0;
     out->base_type = "";
     out->pointer_level = 0;
     out->is_array = 0;
+    out->dims_count = 0;
+    for (int i = 0; i < 8; i++) out->dims[i] = 0;
     switch (expr->type) {
     case AST_IDENTIFIER: {
-        const LocalInfo *li = find_local_info(expr->identifier.name);
+        const LocalInfo *li = find_local_info(cc, expr->identifier.name);
         if (!li) return 0;
         out->base_type = li->base_type;
         out->pointer_level = li->pointer_level;
         out->is_array = li->is_array;
+        out->dims_count = li->dims_count;
+        for (int i = 0; i < li->dims_count && i < 8; i++) out->dims[i] = li->dims[i];
+        // Arrays decay to pointer-to-first-element when used as value
+        if (li->is_array && li->dims_count > 0) {
+            out->pointer_level += 1;
+            // drop the first dimension (array -> pointer to element array)
+            for (int i = 1; i < li->dims_count; i++) out->dims[i-1] = li->dims[i];
+            out->dims_count = li->dims_count - 1;
+            out->is_array = out->dims_count > 0;
+        }
         return 1;
     }
     case AST_NUMBER:
         out->base_type = "int";
         out->pointer_level = 0;
         out->is_array = 0;
+        out->dims_count = 0;
         return 1;
     case AST_MEMBER_ACCESS: {
-        TypeInfo lhs;
-        if (!infer_expr_type(expr->member_access.lhs, &lhs)) return 0;
+        TypeInfo lhs = {0};
+        if (!infer_expr_type(cc, expr->member_access.lhs, &lhs)) return 0;
         if (!lhs.base_type || lhs.base_type[0] == '\0') return 0;
-        const MemberInfo *mi = find_member_info(lhs.base_type, expr->member_access.member);
+        const MemberInfo *mi = find_member_info(cc, lhs.base_type, expr->member_access.member);
         if (!mi) return 0;
         out->base_type = mi->base_type ? mi->base_type : "";
         out->pointer_level = mi->pointer_level;
         out->is_array = mi->is_array;
         if (mi->is_array) out->pointer_level += 1;
+        out->dims_count = 0;
         return 1;
     }
     case AST_ARROW_ACCESS: {
-        TypeInfo lhs;
-        if (!infer_expr_type(expr->arrow_access.lhs, &lhs)) return 0;
+        TypeInfo lhs = {0};
+        if (!infer_expr_type(cc, expr->arrow_access.lhs, &lhs)) return 0;
         if (lhs.pointer_level <= 0 || !lhs.base_type || lhs.base_type[0] == '\0') return 0;
-        const MemberInfo *mi = find_member_info(lhs.base_type, expr->arrow_access.member);
+        const MemberInfo *mi = find_member_info(cc, lhs.base_type, expr->arrow_access.member);
         if (!mi) return 0;
         out->base_type = mi->base_type ? mi->base_type : "";
         out->pointer_level = mi->pointer_level;
         out->is_array = mi->is_array;
         if (mi->is_array) out->pointer_level += 1;
+        out->dims_count = 0;
         return 1;
     }
+    case AST_SIZEOF:
+        out->base_type = "int";
+        out->pointer_level = 0;
+        out->is_array = 0;
+        out->dims_count = 0;
+        return 1;
     case AST_BINARY: {
-        TypeInfo lhs;
-        TypeInfo rhs;
-        if (!infer_expr_type(expr->binary.left, &lhs) ||
-            !infer_expr_type(expr->binary.right, &rhs)) {
+        TypeInfo lhs = {0};
+        TypeInfo rhs = {0};
+        if (!infer_expr_type(cc, expr->binary.left, &lhs) ||
+            !infer_expr_type(cc, expr->binary.right, &rhs)) {
             return 0;
         }
 
@@ -620,6 +639,7 @@ static int infer_expr_type(ASTNode *expr, TypeInfo *out) {
                 out->base_type = "int";
                 out->pointer_level = 0;
                 out->is_array = 0;
+                out->dims_count = 0;
                 return 1;
             }
         }
@@ -632,19 +652,23 @@ static int infer_expr_type(ASTNode *expr, TypeInfo *out) {
     }
     case AST_UNARY:
         if (expr->unary.op == ASTARISK) {
-            TypeInfo inner;
-            if (!infer_expr_type(expr->unary.operand, &inner)) return 0;
+            TypeInfo inner = {0};
+            if (!infer_expr_type(cc, expr->unary.operand, &inner)) return 0;
             if (inner.pointer_level <= 0) return 0;
             out->base_type = inner.base_type;
             out->pointer_level = inner.pointer_level - 1;
-            out->is_array = 0;
+            out->dims_count = inner.dims_count;
+            for (int i = 0; i < inner.dims_count; i++) out->dims[i] = inner.dims[i];
+            out->is_array = (out->dims_count > 0);
             return 1;
         } else if (expr->unary.op == AMPERSAND) {
-            TypeInfo inner;
-            if (!infer_expr_type(expr->unary.operand, &inner)) return 0;
+            TypeInfo inner = {0};
+            if (!infer_expr_type(cc, expr->unary.operand, &inner)) return 0;
             out->base_type = inner.base_type;
             out->pointer_level = inner.pointer_level + 1;
-            out->is_array = 0;
+            out->dims_count = inner.dims_count;
+            for (int i = 0; i < inner.dims_count; i++) out->dims[i] = inner.dims[i];
+            out->is_array = inner.is_array;
             return 1;
         }
         return 0;
@@ -653,14 +677,46 @@ static int infer_expr_type(ASTNode *expr, TypeInfo *out) {
     }
 }
 
-static int pointer_step_bytes(const TypeInfo *info) {
-    if (!info || info->pointer_level <= 0) return 1;
-    if (info->pointer_level > 1) return SLOT_SIZE;
-    if (!info->base_type || info->base_type[0] == '\0') return SLOT_SIZE;
+static int typeinfo_elem_size_bytes(CompilerContext *cc, const TypeInfo *info) {
+    if (!info || !info->base_type) return SLOT_SIZE;
     if (base_type_is_char(info->base_type)) return 1;
-    const StructInfo *si = find_struct(info->base_type);
+    const StructInfo *si = find_struct(cc, info->base_type);
     if (si && si->size_bytes > 0) return si->size_bytes;
     return SLOT_SIZE;
+}
+
+static int typeinfo_total_size_bytes(CompilerContext *cc, const TypeInfo *info) {
+    if (!info) return SLOT_SIZE;
+    if (info->pointer_level > 0 && info->dims_count == 0) return SLOT_SIZE;
+    long sz = typeinfo_elem_size_bytes(cc, info);
+    for (int i = 0; i < info->dims_count; i++) {
+        int len = info->dims[i] > 0 ? info->dims[i] : 1;
+        sz *= len;
+    }
+    if (sz <= 0) sz = SLOT_SIZE;
+    return (int)sz;
+}
+
+static int pointer_step_bytes(CompilerContext *cc, const TypeInfo *info) {
+    if (!info) return 1;
+    if (info->pointer_level <= 0) {
+        if (info->dims_count > 0) {
+            long sz = typeinfo_elem_size_bytes(cc, info);
+            for (int i = 1; i < info->dims_count; i++) {
+                int len = info->dims[i] > 0 ? info->dims[i] : 1;
+                sz *= len;
+            }
+            if (sz <= 0) sz = SLOT_SIZE;
+            return (int)sz;
+        }
+        return 1;
+    }
+    // pointer_level > 0
+    if (info->dims_count > 0) {
+        return typeinfo_total_size_bytes(cc, info);
+    }
+    if (info->pointer_level > 1) return SLOT_SIZE; // pointer to pointer etc.
+    return typeinfo_elem_size_bytes(cc, info);
 }
 
 static int array_element_size_bytes(ASTNode *array_type) {
@@ -670,9 +726,15 @@ static int array_element_size_bytes(ASTNode *array_type) {
     return SLOT_SIZE;
 }
 
-static int lvalue_is_byte(ASTNode *node) {
-    TypeInfo info;
-    if (!infer_expr_type(node, &info)) return 0;
+static int array_total_elements(ASTNode *array_type) {
+    if (!array_type || array_type->type != AST_TYPE_ARRAY) return 1;
+    int n = array_type->type_array.array_size > 0 ? array_type->type_array.array_size : 1;
+    return n * array_total_elements(array_type->type_array.element_type);
+}
+
+static int lvalue_is_byte(CompilerContext *cc, ASTNode *node) {
+    TypeInfo info = (TypeInfo){0};
+    if (!infer_expr_type(cc, node, &info)) return 0;
     return typeinfo_is_byte(&info);
 }
 
@@ -690,7 +752,27 @@ static void emit_store_to_addr(StringBuilder *sb, const char *addr_reg, const ch
         sb_append(sb, "  store %s, %s\n", addr_reg, value_reg);
 }
 
-static const LocalInfo *find_local_info(const char *name) {
+static void emit_scale_reg_const(CompilerContext *cc, StringBuilder *sb, const char *reg, long factor) {
+    if (factor == 1) return;
+    if (factor <= 0) {
+        sb_append(sb, "  ; unsupported scale factor %ld\n", factor);
+        return;
+    }
+    sb_append(sb, "  ; scale %s by %ld\n", reg, factor);
+    sb_append(sb, "  mov r4, %s\n", reg);
+    sb_append(sb, "  movi %s, 0\n", reg);
+    sb_append(sb, "  movi r5, %ld\n", factor);
+    int lbl = next_label(cc);
+    sb_append(sb, "b_idx_mul_%d:\n", lbl);
+    sb_append(sb, "  cmp r5, 0\n");
+    sb_append(sb, "  jz b_idx_mul_end_%d\n", lbl);
+    sb_append(sb, "  add %s, r4\n", reg);
+    sb_append(sb, "  addis r5, -1\n");
+    sb_append(sb, "  jmp b_idx_mul_%d\n", lbl);
+    sb_append(sb, "b_idx_mul_end_%d:\n", lbl);
+}
+
+static const LocalInfo *find_local_info(CompilerContext *cc, const char *name) {
     for (int i = 0; i < cg_locals_count; i++) {
         if (strcmp(cg_locals_info[i].name, name) == 0) return &cg_locals_info[i];
     }
@@ -703,22 +785,26 @@ static void set_localinfo_from_type(LocalInfo *info, ASTNode *type_node) {
     info->pointer_level = 0;
     info->is_array = 0;
     info->array_length = 0;
+    info->dims_count = 0;
+    for (int i = 0; i < 8; i++) info->dims[i] = 0;
     if (!type_node) return;
 
-    int array_levels = 0;
+    // Collect array dimensions from inner-most to outer-most then reverse
+    int tmp_dims[8] = {0};
+    int tmp_count = 0;
     ASTNode *node = type_node;
-    while (node && node->type == AST_TYPE_ARRAY) {
-        info->is_array = 1;
-        if (info->array_length == 0 && node->type_array.array_size > 0) {
-            info->array_length = node->type_array.array_size;
-        }
-        array_levels++;
+    while (node && node->type == AST_TYPE_ARRAY && tmp_count < 8) {
+        tmp_dims[tmp_count++] = node->type_array.array_size;
         node = node->type_array.element_type;
     }
-
-    if (!node) {
-        info->pointer_level = array_levels;
-        return;
+    if (tmp_count > 0) info->is_array = 1;
+    for (int i = 0; i < tmp_count; i++) {
+        int dim = tmp_dims[tmp_count - 1 - i]; // reverse so dims[0] is outer-most
+        info->dims[i] = dim;
+        if (i == 0 && info->array_length == 0 && dim > 0) {
+            info->array_length = dim;
+        }
+        info->dims_count++;
     }
 
     if (node->type == AST_TYPE) {
@@ -726,9 +812,9 @@ static void set_localinfo_from_type(LocalInfo *info, ASTNode *type_node) {
         if (bt && bt->type == AST_IDENTIFIER) {
             info->base_type = bt->identifier.name;
         }
-        info->pointer_level = node->type_node.pointer_level + array_levels;
+        info->pointer_level = node->type_node.pointer_level;
     } else {
-        info->pointer_level = array_levels;
+        info->pointer_level = 0;
     }
 }
 
@@ -765,51 +851,51 @@ static int collect_local_type_info(ASTNode *node, LocalInfo *arr) {
     return n;
 }
 
-static void gen_lvalue_addr(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void gen_lvalue_addr(CompilerContext *cc, ASTNode *node, StringBuilder *sb, const char *target_reg,
                             char **params, int param_count,
                             char **locals, int local_count) {
     if (!node) { sb_append(sb, "  ; gen_lvalue_addr: null\n"); return; }
     switch (node->type) {
     case AST_IDENTIFIER: {
-        emit_addr_of_var(sb, node->identifier.name, target_reg, params, param_count, locals, local_count);
+        emit_addr_of_var(cc, sb, node->identifier.name, target_reg, params, param_count, locals, local_count);
         break; }
     case AST_UNARY: {
         if (node->unary.op == ASTARISK) {
             // address is the value of operand
-            gen_expr(node->unary.operand, sb, target_reg, params, param_count, locals, local_count);
+            gen_expr(cc, node->unary.operand, sb, target_reg, params, param_count, locals, local_count);
         } else {
             sb_append(sb, "  ; unsupported lvalue op\n");
         }
         break; }
     case AST_MEMBER_ACCESS: {
-        TypeInfo lhs_type;
-        if (!infer_expr_type(node->member_access.lhs, &lhs_type) ||
+        TypeInfo lhs_type = (TypeInfo){0};
+        if (!infer_expr_type(cc, node->member_access.lhs, &lhs_type) ||
             !lhs_type.base_type || lhs_type.base_type[0] == '\0') {
             sb_append(sb, "  ; unknown member base type\n");
             break;
         }
-        const MemberInfo *mi = find_member_info(lhs_type.base_type, node->member_access.member);
+        const MemberInfo *mi = find_member_info(cc, lhs_type.base_type, node->member_access.member);
         if (!mi) {
             sb_append(sb, "  ; unknown member %s of %s\n", node->member_access.member, lhs_type.base_type);
             break;
         }
-        gen_lvalue_addr(node->member_access.lhs, sb, target_reg, params, param_count, locals, local_count);
+        gen_lvalue_addr(cc, node->member_access.lhs, sb, target_reg, params, param_count, locals, local_count);
         sb_append(sb, "  addis %s, %d\n", target_reg, mi->offset);
         break; }
     case AST_ARROW_ACCESS: {
-        TypeInfo lhs_type;
-        if (!infer_expr_type(node->arrow_access.lhs, &lhs_type) ||
+        TypeInfo lhs_type = (TypeInfo){0};
+        if (!infer_expr_type(cc, node->arrow_access.lhs, &lhs_type) ||
             lhs_type.pointer_level <= 0 ||
             !lhs_type.base_type || lhs_type.base_type[0] == '\0') {
             sb_append(sb, "  ; unknown pointer base for arrow access\n");
             break;
         }
-        const MemberInfo *mi = find_member_info(lhs_type.base_type, node->arrow_access.member);
+        const MemberInfo *mi = find_member_info(cc, lhs_type.base_type, node->arrow_access.member);
         if (!mi) {
             sb_append(sb, "  ; unknown member %s of %s\n", node->arrow_access.member, lhs_type.base_type);
             break;
         }
-        gen_expr(node->arrow_access.lhs, sb, target_reg, params, param_count, locals, local_count);
+        gen_expr(cc, node->arrow_access.lhs, sb, target_reg, params, param_count, locals, local_count);
         sb_append(sb, "  addis %s, %d\n", target_reg, mi->offset);
         break; }
     default:
@@ -817,25 +903,38 @@ static void gen_lvalue_addr(ASTNode *node, StringBuilder *sb, const char *target
     }
 }
 
-static void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void gen_expr_binop(CompilerContext *cc, ASTNode *node, StringBuilder *sb, const char *target_reg,
                     char **params, int param_count, char **locals, int local_count)
 {
     // Pointer arithmetic with constant index: scale by element size
-    TypeInfo lhs_t, rhs_t;
-    int lhs_ptr = infer_expr_type(node->binary.left, &lhs_t) && lhs_t.pointer_level > 0;
-    int rhs_ptr = infer_expr_type(node->binary.right, &rhs_t) && rhs_t.pointer_level > 0;
+    TypeInfo lhs_t = {0}, rhs_t = {0};
+    int lhs_ptr = infer_expr_type(cc, node->binary.left, &lhs_t) &&
+                  (lhs_t.pointer_level > 0 || lhs_t.dims_count > 0);
+    int rhs_ptr = infer_expr_type(cc, node->binary.right, &rhs_t) &&
+                  (rhs_t.pointer_level > 0 || rhs_t.dims_count > 0);
     if ((node->binary.op == ADD || node->binary.op == SUB) && lhs_ptr != rhs_ptr) {
         ASTNode *ptr_expr = lhs_ptr ? node->binary.left : node->binary.right;
         ASTNode *idx_expr = lhs_ptr ? node->binary.right : node->binary.left;
         TypeInfo *ptr_t = lhs_ptr ? &lhs_t : &rhs_t;
+        long step = pointer_step_bytes(cc, ptr_t);
         if (idx_expr->type == AST_NUMBER) {
             long idx_val = strtol(idx_expr->number.value, NULL, 10);
-            long step = pointer_step_bytes(ptr_t);
             long offset = idx_val * step;
             if (node->binary.op == SUB && lhs_ptr) offset = -offset;
-            gen_expr(ptr_expr, sb, target_reg, params, param_count, locals, local_count);
+            gen_expr(cc, ptr_expr, sb, target_reg, params, param_count, locals, local_count);
             if (offset != 0) {
                 sb_append(sb, "  addis %s, %ld\n", target_reg, offset);
+            }
+            return;
+        } else {
+            // dynamic index
+            gen_expr(cc, ptr_expr, sb, target_reg, params, param_count, locals, local_count);
+            gen_expr(cc, idx_expr, sb, "r1", params, param_count, locals, local_count);
+            emit_scale_reg_const(cc, sb, "r1", step);
+            if (node->binary.op == SUB && lhs_ptr) {
+                sb_append(sb, "  sub %s, r1\n", target_reg);
+            } else {
+                sb_append(sb, "  add %s, r1\n", target_reg);
             }
             return;
         }
@@ -847,21 +946,21 @@ static void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_
     //   2. Load the value from that address
     if (node->binary.left->type == AST_UNARY &&
         node->binary.left->unary.op == ASTARISK) {
-        gen_expr(node->binary.left->unary.operand, sb, "r2", params, param_count, locals, local_count);
-        int isb = lvalue_is_byte(node->binary.left);
+        gen_expr(cc, node->binary.left->unary.operand, sb, "r2", params, param_count, locals, local_count);
+        int isb = lvalue_is_byte(cc, node->binary.left);
         emit_load_from_addr(sb, "r2", "r2", isb);
     } else {
-        gen_expr(node->binary.left, sb, "r2", params, param_count, locals, local_count);
+        gen_expr(cc, node->binary.left, sb, "r2", params, param_count, locals, local_count);
     }
 
     // --- Generate code for the right-hand operand ---
     if (node->binary.right->type == AST_UNARY &&
         node->binary.right->unary.op == ASTARISK) {
-        gen_expr(node->binary.right->unary.operand, sb, "r1", params, param_count, locals, local_count);
-        int isb = lvalue_is_byte(node->binary.right);
+        gen_expr(cc, node->binary.right->unary.operand, sb, "r1", params, param_count, locals, local_count);
+        int isb = lvalue_is_byte(cc, node->binary.right);
         emit_load_from_addr(sb, "r1", "r1", isb);
     } else {
-        gen_expr(node->binary.right, sb, "r1", params, param_count, locals, local_count);
+        gen_expr(cc, node->binary.right, sb, "r1", params, param_count, locals, local_count);
     }
 
 
@@ -877,59 +976,59 @@ static void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_
         sb_append(sb, "\n; multiply r2 * r1\n");
         sb_append(sb, "  movi r4, 0      ; r4 = result\n");
         sb_append(sb, "  mov r5, r1     ; r5 = count\n");
-        sb_append(sb, "b_mul_loop_%d:\n", label_count);
+        int lbl_mul = next_label(cc);
+        sb_append(sb, "b_mul_loop_%d:\n", lbl_mul);
         sb_append(sb, "  cmp r5, 0\n");
-        sb_append(sb, "  jz b_mul_end_%d\n", label_count);
+        sb_append(sb, "  jz b_mul_end_%d\n", lbl_mul);
         sb_append(sb, "  add r4, r2\n");
         sb_append(sb, "  addis r5, -1\n");
-        sb_append(sb, "  jmp b_mul_loop_%d\n", label_count);
-        sb_append(sb, "b_mul_end_%d:\n", label_count);
+        sb_append(sb, "  jmp b_mul_loop_%d\n", lbl_mul);
+        sb_append(sb, "b_mul_end_%d:\n", lbl_mul);
         sb_append(sb, "  mov r1, r4\n");
-        label_count++;
         break;
     case DIV:
         sb_append(sb, "\n; divide r2 / r1\n");
         sb_append(sb, "  movi r4, 0      ; r4 = result (quotient)\n");
-        sb_append(sb, "b_div_loop_%d:\n", label_count);
+        int lbl_div = next_label(cc);
+        sb_append(sb, "b_div_loop_%d:\n", lbl_div);
         sb_append(sb, "  cmp r2, r1\n");
-        sb_append(sb, "  jl b_div_end_%d\n", label_count);
+        sb_append(sb, "  jl b_div_end_%d\n", lbl_div);
         sb_append(sb, "  sub r2, r1\n");
         sb_append(sb, "  addis r4, 1\n");
-        sb_append(sb, "  jmp b_div_loop_%d\n", label_count);
-        sb_append(sb, "b_div_end_%d:\n", label_count);
+        sb_append(sb, "  jmp b_div_loop_%d\n", lbl_div);
+        sb_append(sb, "b_div_end_%d:\n", lbl_div);
         sb_append(sb, "  mov r1, r4\n");
-        label_count++;
         break;
     case MOD:
         sb_append(sb, "\n; modulo r2 %% r1\n");
         sb_append(sb, "  mov r6, r2     ; r6 = dividend backup (r2)\n");
         sb_append(sb, "  movi r4, 0      ; r4 = result (quotient)\n");
-        sb_append(sb, "b_mod_loop_%d:\n", label_count);
+        int lbl_mod = next_label(cc);
+        sb_append(sb, "b_mod_loop_%d:\n", lbl_mod);
         sb_append(sb, "  cmp r2, r1\n");
-        sb_append(sb, "  jl b_mod_end_%d\n", label_count);
+        sb_append(sb, "  jl b_mod_end_%d\n", lbl_mod);
         sb_append(sb, "  sub r2, r1\n");
         sb_append(sb, "  addis r4, 1\n");
-        sb_append(sb, "  jmp b_mod_loop_%d\n", label_count);
-        sb_append(sb, "b_mod_end_%d:\n", label_count);
+        sb_append(sb, "  jmp b_mod_loop_%d\n", lbl_mod);
+        sb_append(sb, "b_mod_end_%d:\n", lbl_mod);
         sb_append(sb, "  ; r2 now contains remainder\n");
         sb_append(sb, "  mov r1, r2\n");
-        label_count++;
         break;
         
     case LAND: {
-            int label = label_count++;
+            int label = next_label(cc);
             char label_false[32], label_end[32];
             snprintf(label_false, sizeof(label_false), "b_land_false_%d", label);
             snprintf(label_end, sizeof(label_end), "b_land_end_%d", label);
     
             // Logical AND (&&) with short-circuit evaluation
             // Evaluate left operand
-            gen_expr(node->binary.left, sb, "r1", params, param_count, locals, local_count);
+            gen_expr(cc, node->binary.left, sb, "r1", params, param_count, locals, local_count);
             sb_append(sb, "  cmp r1, 0\n");
             sb_append(sb, "  jz %s\n", label_false);  // If left is false → jump to false
-    
+   
             // Evaluate right operand
-            gen_expr(node->binary.right, sb, "r1", params, param_count, locals, local_count);
+            gen_expr(cc, node->binary.right, sb, "r1", params, param_count, locals, local_count);
             sb_append(sb, "  cmp r1, 0\n");
             sb_append(sb, "  jz %s\n", label_false);  // If right is false → jump to false
     
@@ -947,19 +1046,19 @@ static void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_
         }
     
         case LOR: {
-            int label = label_count++;
+            int label = next_label(cc);
             char label_true[32], label_end[32];
             snprintf(label_true, sizeof(label_true), "b_lor_true_%d", label);
             snprintf(label_end, sizeof(label_end), "b_lor_end_%d", label);
     
             // Logical OR (||) with short-circuit evaluation
             // Evaluate left operand
-            gen_expr(node->binary.left, sb, "r1", params, param_count, locals, local_count);
+            gen_expr(cc, node->binary.left, sb, "r1", params, param_count, locals, local_count);
             sb_append(sb, "  cmp r1, 0\n");
             sb_append(sb, "  jnz %s\n", label_true);  // If left is true → jump to true
-    
+   
             // Evaluate right operand
-            gen_expr(node->binary.right, sb, "r1", params, param_count, locals, local_count);
+            gen_expr(cc, node->binary.right, sb, "r1", params, param_count, locals, local_count);
             sb_append(sb, "  cmp r1, 0\n");
             sb_append(sb, "  jnz %s\n", label_true);  // If right is true → jump to true
     
@@ -986,7 +1085,7 @@ static void gen_expr_binop(ASTNode *node, StringBuilder *sb, const char *target_
         sb_append(sb, "  mov %s, r1\n", target_reg);
 }
 
-static void gen_call(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void gen_call(CompilerContext *cc, ASTNode *node, StringBuilder *sb, const char *target_reg,
               char **params, int param_count, char **locals, int local_count)
 {
     int argc = node->call.arg_count;
@@ -999,7 +1098,7 @@ static void gen_call(ASTNode *node, StringBuilder *sb, const char *target_reg,
         sb_append(sb, "  addis sp, -%d\n", stack_args * SLOT_SIZE);
         for (int i = 3; i < argc; i++)
         {
-            gen_expr(node->call.args[i], sb, "r1", params, param_count, locals, local_count);
+            gen_expr(cc, node->call.args[i], sb, "r1", params, param_count, locals, local_count);
             sb_append(sb, "  mov r2, sp\n");
             sb_append(sb, "  addis r2, %d\n", (i - 3) * SLOT_SIZE);
             sb_append(sb, "  store r2, r1\n"); // Store the argument value at [sp + offset]
@@ -1009,7 +1108,7 @@ static void gen_call(ASTNode *node, StringBuilder *sb, const char *target_reg,
     // Pass the first 3 arguments via registers r5, r6, r7 (left to right)
     for (int i = 0; i < argc && i < 3; i++)
     {
-        gen_expr(node->call.args[i], sb, arg_regs[i], params, param_count, locals, local_count);
+        gen_expr(cc, node->call.args[i], sb, arg_regs[i], params, param_count, locals, local_count);
     }
 
     sb_append(sb, "  call f_%s\n", node->call.name);
@@ -1026,14 +1125,13 @@ static void gen_call(ASTNode *node, StringBuilder *sb, const char *target_reg,
         sb_append(sb, "  mov %s, r1\n", target_reg);
 }
 
-static void gen_if(ASTNode *node, StringBuilder *sb,
+static void gen_if(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
     char **params, int param_count,
     char **locals, int local_count,
     const char *break_label,
     const char *continue_label)
 {
-    static int label_count = 0;
-    int cur_label = label_count++;
+    int cur_label = next_label(cc);
 
     char then_label[32], else_label[32], end_label[32];
     snprintf(then_label, sizeof(then_label), "b_L_then_%d", cur_label);
@@ -1048,32 +1146,32 @@ static void gen_if(ASTNode *node, StringBuilder *sb,
 
     if (cond->type == AST_BINARY)
     {
-        emit_cond_jump(cond->binary.left, cond->binary.right, cond->binary.op, sb,
+        emit_cond_jump(cc, cond->binary.left, cond->binary.right, cond->binary.op, sb,
                        params, param_count, locals, local_count, then_label, else_label);
     }
     else
     {
         // General case: treat cond as value
-        gen_expr(cond, sb, "r1", params, param_count, locals, local_count);
+        gen_expr(cc, cond, sb, "r1", params, param_count, locals, local_count);
         sb_append(sb, "  cmp r1, 0\n");
         sb_append(sb, "  jnz %s\n", then_label);
         sb_append(sb, "  jmp %s\n", else_label);
     }
 
     sb_append(sb, "%s:\n", then_label);
-    gen_stmt_internal(node->if_stmt.then_stmt, sb, params, param_count, locals, local_count,
+    gen_stmt_internal(cc, node->if_stmt.then_stmt, sb, params, param_count, locals, local_count,
         break_label, continue_label);
     sb_append(sb, "  jmp %s\n", end_label);
 
     if (node->if_stmt.else_stmt)
     {
         sb_append(sb, "%s:\n", else_label);
-        gen_stmt_internal(node->if_stmt.else_stmt, sb, params, param_count, locals, local_count,
+        gen_stmt_internal(cc, node->if_stmt.else_stmt, sb, params, param_count, locals, local_count,
             break_label, continue_label);
     }
     sb_append(sb, "%s:\n", end_label);
 }
-static void gen_for(ASTNode *node, StringBuilder *sb,
+static void gen_for(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
     char **params, int param_count,
     char **locals, int local_count,
     const char *break_label,
@@ -1081,8 +1179,7 @@ static void gen_for(ASTNode *node, StringBuilder *sb,
 
 {
     (void)break_label; (void)continue_label;
-    static int label_count = 0;
-    int cur_label = label_count++;
+    int cur_label = next_label(cc);
     char for_cond[32], for_body[32], for_inc[32], for_end[32];
     snprintf(for_cond, sizeof(for_cond), "b_L_for_cond_%d", cur_label);
     snprintf(for_body, sizeof(for_body), "b_L_for_body_%d", cur_label);
@@ -1090,20 +1187,20 @@ static void gen_for(ASTNode *node, StringBuilder *sb,
     snprintf(for_end, sizeof(for_end), "b_L_for_end_%d", cur_label);
 
     if (node->for_stmt.init)
-        gen_stmt(node->for_stmt.init, sb, params, param_count, locals, local_count);
+        gen_stmt(cc, node->for_stmt.init, sb, params, param_count, locals, local_count);
 
     sb_append(sb, "%s:\n", for_cond);
 
     if (node->for_stmt.cond && node->for_stmt.cond->type == AST_BINARY)
     {
-        emit_cond_jump(node->for_stmt.cond->binary.left, node->for_stmt.cond->binary.right,
+        emit_cond_jump(cc, node->for_stmt.cond->binary.left, node->for_stmt.cond->binary.right,
                        node->for_stmt.cond->binary.op, sb,
                        params, param_count, locals, local_count,
                        for_body, for_end);
     }
     else if (node->for_stmt.cond)
     {
-        gen_expr(node->for_stmt.cond, sb, "r1", params, param_count, locals, local_count);
+        gen_expr(cc, node->for_stmt.cond, sb, "r1", params, param_count, locals, local_count);
         sb_append(sb, "  cmp r1, 0\n");
         sb_append(sb, "  jnz %s\n", for_body);
         sb_append(sb, "  jmp %s\n", for_end);
@@ -1114,26 +1211,25 @@ static void gen_for(ASTNode *node, StringBuilder *sb,
     }
 
     sb_append(sb, "%s:\n", for_body);
-    gen_stmt_internal(node->for_stmt.body, sb, params, param_count, locals, local_count,
+    gen_stmt_internal(cc, node->for_stmt.body, sb, params, param_count, locals, local_count,
         for_end, for_inc);
 
     sb_append(sb, "%s:\n", for_inc);
     if (node->for_stmt.inc)
-        gen_stmt(node->for_stmt.inc, sb, params, param_count, locals, local_count);
+        gen_stmt(cc, node->for_stmt.inc, sb, params, param_count, locals, local_count);
 
     sb_append(sb, "  jmp %s\n", for_cond);
     sb_append(sb, "%s:\n", for_end);
 }
 
-static void gen_while(ASTNode *node, StringBuilder *sb,
+static void gen_while(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
     char **params, int param_count,
     char **locals, int local_count,
     const char *break_label,
     const char *continue_label)
 {
     (void)break_label; (void)continue_label;
-    static int label_counter = 0;
-    int cur = label_counter++;
+    int cur = next_label(cc);
 
     char cond_label[32], body_label[32], end_label[32];
     snprintf(cond_label, sizeof(cond_label), "b_L_while_cond_%d", cur);
@@ -1144,7 +1240,7 @@ static void gen_while(ASTNode *node, StringBuilder *sb,
     sb_append(sb, "%s:\n", cond_label);
 
     if (node->while_stmt.cond->type == AST_BINARY) {
-        emit_cond_jump(
+        emit_cond_jump(cc,
             node->while_stmt.cond->binary.left,
             node->while_stmt.cond->binary.right,
             node->while_stmt.cond->binary.op,
@@ -1152,7 +1248,7 @@ static void gen_while(ASTNode *node, StringBuilder *sb,
             body_label, end_label
         );
     } else {
-        gen_expr(node->while_stmt.cond, sb, "r1", params, param_count, locals, local_count);
+        gen_expr(cc, node->while_stmt.cond, sb, "r1", params, param_count, locals, local_count);
         sb_append(sb, "  cmp r1, 0\n");
         sb_append(sb, "  jnz %s\n", body_label);
         sb_append(sb, "  jmp %s\n", end_label);
@@ -1161,7 +1257,7 @@ static void gen_while(ASTNode *node, StringBuilder *sb,
     // loop body
     sb_append(sb, "%s:\n", body_label);
     gen_stmt_internal(
-        node->while_stmt.body, sb,
+        cc, node->while_stmt.body, sb,
         params, param_count, locals, local_count,
         end_label, cond_label
     );
@@ -1173,7 +1269,7 @@ static void gen_while(ASTNode *node, StringBuilder *sb,
     sb_append(sb, "%s:\n", end_label);
 }
 
-static void gen_assign(ASTNode *node, StringBuilder *sb,
+static void gen_assign(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
               char **params, int param_count,
               char **locals, int local_count,
               const char *target_reg) {
@@ -1181,29 +1277,53 @@ static void gen_assign(ASTNode *node, StringBuilder *sb,
         fprintf(stderr, "Codegen error: gen_assign called on non-assignment node\n");
         exit(1);
     }
-    gen_expr(node->assign.right, sb, "r1", params, param_count, locals, local_count);
-    gen_lvalue_addr(node->assign.left, sb, "r3", params, param_count, locals, local_count);
-    int is_byte = lvalue_is_byte(node->assign.left);
+    gen_expr(cc, node->assign.right, sb, "r1", params, param_count, locals, local_count);
+    gen_lvalue_addr(cc, node->assign.left, sb, "r3", params, param_count, locals, local_count);
+    int is_byte = lvalue_is_byte(cc, node->assign.left);
     emit_store_to_addr(sb, "r3", "r1", is_byte);
     if (target_reg && strcmp(target_reg, "r1") != 0) {
         sb_append(sb, "  mov %s, r1\n", target_reg);
     }
 }
 
-static void gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void gen_expr(CompilerContext *cc, ASTNode *node, StringBuilder *sb, const char *target_reg,
               char **params, int param_count,
               char **locals, int local_count) {
-                _gen_expr(node, sb, target_reg, params, param_count, locals, local_count, 0);
+                _gen_expr(cc, node, sb, target_reg, params, param_count, locals, local_count, 0);
               }
 
-static void _gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
+static void _gen_expr(CompilerContext *cc, ASTNode *node, StringBuilder *sb, const char *target_reg,
               char **params, int param_count, char **locals, int local_count,
               int want_address)
 {
     switch (node->type)
     {
+    case AST_SIZEOF: {
+        int sz = SLOT_SIZE;
+        int determined = 0;
+        if (node->sizeof_expr.expr && node->sizeof_expr.expr->type == AST_IDENTIFIER) {
+            const LocalInfo *li = find_local_info(cc, node->sizeof_expr.expr->identifier.name);
+            if (li) {
+                TypeInfo ti = {0};
+                ti.base_type = li->base_type;
+                ti.pointer_level = li->pointer_level;
+                ti.is_array = li->is_array;
+                ti.dims_count = li->dims_count;
+                for (int i = 0; i < li->dims_count && i < 8; i++) ti.dims[i] = li->dims[i];
+                sz = typeinfo_total_size_bytes(cc, &ti);
+                determined = 1;
+            }
+        }
+            if (!determined) {
+                TypeInfo ti = {0};
+                if (infer_expr_type(cc, node->sizeof_expr.expr, &ti)) {
+                    sz = typeinfo_total_size_bytes(cc, &ti);
+                }
+            }
+        sb_append(sb, "  movi %s, %d\n", target_reg, sz);
+        break; }
     case AST_STRING_LITERAL: {
-        const char *label = intern_string_literal(node->string_literal.value ? node->string_literal.value : "");
+        const char *label = intern_string_literal(cc, node->string_literal.value ? node->string_literal.value : "");
         sb_append(sb, "  movi  %s, %s\n", target_reg, label);
         break; }
     case AST_CHAR_LITERAL: {
@@ -1214,7 +1334,7 @@ static void _gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
         sb_append(sb, "  movi  %s, %u\n", target_reg, (unsigned)v);
         break; }
     case AST_ASSIGN:
-        gen_assign(node, sb, params, param_count, locals, local_count, target_reg);
+        gen_assign(cc, node, sb, params, param_count, locals, local_count, target_reg);
         break;
     case AST_NUMBER:
         sb_append(sb, "  \n; load constant %s into %s\n", node->number.value, target_reg);
@@ -1224,50 +1344,55 @@ static void _gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
         switch (node->unary.op)
         {
         case ASTARISK: // *
-            _gen_expr(node->unary.operand, sb, "r3",
+            _gen_expr(cc, node->unary.operand, sb, "r3",
                       params, param_count, locals, local_count,
                       0);
+            TypeInfo result_type = (TypeInfo){0};
+            int have_type = infer_expr_type(cc, node, &result_type);
+            int is_array_result = have_type && result_type.dims_count > 0;
             if (!want_address) {
-                sb_append(sb, "  ; dereference *expr\n");
-                int isb = 0;
-                TypeInfo result_type;
-                if (infer_expr_type(node, &result_type))
-                    isb = typeinfo_is_byte(&result_type);
-                emit_load_from_addr(sb, target_reg, "r3", isb);
+                if (is_array_result) {
+                    sb_append(sb, "  ; dereference array -> decay to pointer\n");
+                    sb_append(sb, "  mov %s, r3\n", target_reg);
+                } else {
+                    sb_append(sb, "  ; dereference *expr\n");
+                    int isb = have_type ? typeinfo_is_byte(&result_type) : 0;
+                    emit_load_from_addr(sb, target_reg, "r3", isb);
+                }
             } else {
                 sb_append(sb, "  mov %s, r3\n", target_reg);
             }
             break;
         case AMPERSAND:
-            gen_lvalue_addr(node->unary.operand, sb, target_reg, params, param_count, locals, local_count);
+            gen_lvalue_addr(cc, node->unary.operand, sb, target_reg, params, param_count, locals, local_count);
             break;
 
         default:
-            emit_unary_inc_dec(node, sb, target_reg, params, param_count, locals, local_count);
+            emit_unary_inc_dec(cc, node, sb, target_reg, params, param_count, locals, local_count);
         }
         break;
 
     case AST_IDENTIFIER:
-        emit_load_var(sb, node->identifier.name, target_reg, params, param_count, locals, local_count);
+        emit_load_var(cc, sb, node->identifier.name, target_reg, params, param_count, locals, local_count);
         break;
     case AST_BINARY:
-        gen_expr_binop(node, sb, target_reg, params, param_count, locals, local_count);
+        gen_expr_binop(cc, node, sb, target_reg, params, param_count, locals, local_count);
         break;
     case AST_CALL:
-        gen_call(node, sb, target_reg, params, param_count, locals, local_count);
+        gen_call(cc, node, sb, target_reg, params, param_count, locals, local_count);
         break;
     case AST_MEMBER_ACCESS: {
         // load *(addr(lhs) + offset(member))
-        gen_lvalue_addr(node, sb, "r3", params, param_count, locals, local_count);
+        gen_lvalue_addr(cc, node, sb, "r3", params, param_count, locals, local_count);
         {
-            int isb = lvalue_is_byte(node);
+            int isb = lvalue_is_byte(cc, node);
             emit_load_from_addr(sb, target_reg, "r3", isb);
         }
         break; }
     case AST_ARROW_ACCESS: {
-        gen_lvalue_addr(node, sb, "r3", params, param_count, locals, local_count);
+        gen_lvalue_addr(cc, node, sb, "r3", params, param_count, locals, local_count);
         {
-            int isb = lvalue_is_byte(node);
+            int isb = lvalue_is_byte(cc, node);
             emit_load_from_addr(sb, target_reg, "r3", isb);
         }
         break; }
@@ -1277,16 +1402,16 @@ static void _gen_expr(ASTNode *node, StringBuilder *sb, const char *target_reg,
     }
 }
 
-static void gen_stmt(ASTNode *node, StringBuilder *sb,
+static void gen_stmt(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
               char **params, int param_count,
               char **locals, int local_count)
 {
-    gen_stmt_internal(node, sb, params, param_count, locals, local_count,
+    gen_stmt_internal(cc, node, sb, params, param_count, locals, local_count,
                       NULL, NULL);
 }
 
 // Statement codegen
-static void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
+static void gen_stmt_internal(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
                        char **params, int param_count,
                        char **locals, int local_count,
                        const char *break_label,
@@ -1303,16 +1428,16 @@ static void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
                 // Array initializer
                 sb_append(sb, "  ; init array '%s'\n", node->var_decl.name);
                 // address of var into r3
-                emit_addr_of_var(sb, node->var_decl.name, "r3", params, param_count, locals, local_count);
+                emit_addr_of_var(cc, sb, node->var_decl.name, "r3", params, param_count, locals, local_count);
 
                 int elem_size = array_element_size_bytes(vtype);
                 int is_byte_elem = (elem_size == 1);
-                int arr_size = vtype->type_array.array_size > 0 ? vtype->type_array.array_size : 0;
+                int total_elems = array_total_elements(vtype);
 
-                if (node->var_decl.init->type == AST_STRING_LITERAL) {
+                if (node->var_decl.init->type == AST_STRING_LITERAL && vtype->type_array.element_type && vtype->type_array.element_type->type != AST_TYPE_ARRAY) {
                     const char *str = node->var_decl.init->string_literal.value ? node->var_decl.init->string_literal.value : "";
                     int len = (int)strlen(str);
-                    int total = arr_size > 0 ? arr_size : (len + 1);
+                    int total = total_elems > 0 ? total_elems : (len + 1);
                     for (int i = 0; i < total; i++) {
                         unsigned char val = 0;
                         if (i < len) {
@@ -1332,10 +1457,10 @@ static void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
                     }
                 } else if (node->var_decl.init->type == AST_INIT_LIST) {
                     int count = node->var_decl.init->init_list.count;
-                    int total = arr_size > 0 ? arr_size : count;
+                    int total = total_elems > 0 ? total_elems : count;
                     int limit = count < total ? count : total;
                     for (int i = 0; i < limit; i++) {
-                        gen_expr(node->var_decl.init->init_list.elements[i], sb, "r1", params, param_count, locals, local_count);
+                        gen_expr(cc, node->var_decl.init->init_list.elements[i], sb, "r1", params, param_count, locals, local_count);
                         int offset = elem_size * i;
                         if (offset == 0) {
                             emit_store_to_addr(sb, "r3", "r1", is_byte_elem);
@@ -1361,16 +1486,16 @@ static void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
                     }
                 }
             } else {
-                gen_expr(node->var_decl.init, sb, "r1", params, param_count, locals, local_count);
-                emit_store_var(sb, node->var_decl.name, "r1", params, param_count, locals, local_count);
+                gen_expr(cc, node->var_decl.init, sb, "r1", params, param_count, locals, local_count);
+                emit_store_var(cc, sb, node->var_decl.name, "r1", params, param_count, locals, local_count);
             }
         }
         break;
     case AST_UNARY:
-        emit_unary_inc_dec(node, sb, "r1", params, param_count, locals, local_count);
+        emit_unary_inc_dec(cc, node, sb, "r1", params, param_count, locals, local_count);
         break;
     case AST_ASSIGN:
-        gen_assign(node, sb, params, param_count, locals, local_count, "r1");
+        gen_assign(cc, node, sb, params, param_count, locals, local_count, "r1");
         break;
     case AST_BREAK:
         if (break_label)
@@ -1385,28 +1510,28 @@ static void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
             sb_append(sb, "  ; error: continue used outside loop\n");
         break;
     case AST_EXPR_STMT:
-        gen_expr(node->expr_stmt.expr, sb, "r1", params, param_count, locals, local_count);
+        gen_expr(cc, node->expr_stmt.expr, sb, "r1", params, param_count, locals, local_count);
         break;
     case AST_IF:
-        gen_if(node, sb, params, param_count, locals, local_count, break_label, continue_label);
+        gen_if(cc, node, sb, params, param_count, locals, local_count, break_label, continue_label);
         break;
     case AST_FOR:
-        gen_for(node, sb, params, param_count, locals, local_count,
+        gen_for(cc, node, sb, params, param_count, locals, local_count,
                 break_label, continue_label);
         break;
     case AST_WHILE:
-        gen_while(node, sb, params, param_count, locals, local_count,
+        gen_while(cc, node, sb, params, param_count, locals, local_count,
                   break_label, continue_label);
         break;
     case AST_RETURN:
-        gen_expr(node->ret.expr, sb, "r1", params, param_count, locals, local_count);
+        gen_expr(cc, node->ret.expr, sb, "r1", params, param_count, locals, local_count);
         // r1 = return value. No 'ret' for main.
         sb_append(sb, "  \n; return\n");
         break;
     case AST_BLOCK:
         for (int i = 0; i < node->block.count; i++)
         {
-            gen_stmt_internal(node->block.stmts[i], sb, params, param_count, locals, local_count,
+            gen_stmt_internal(cc, node->block.stmts[i], sb, params, param_count, locals, local_count,
                                  break_label, continue_label);
         }
         break;
@@ -1416,7 +1541,7 @@ static void gen_stmt_internal(ASTNode *node, StringBuilder *sb,
     }
 }
 
-void gen_func(ASTNode *node, StringBuilder *sb)
+void gen_func(CompilerContext *cc, ASTNode *node, StringBuilder *sb)
 {
 
     if (node->type != AST_FUNDEF) return;
@@ -1430,7 +1555,7 @@ void gen_func(ASTNode *node, StringBuilder *sb)
     }
 
     char *locals[32] = {0};
-    int local_count = collect_locals(node->fundef.body, locals);
+    int local_count = collect_locals(cc, node->fundef.body, locals);
 
     // Collect param + local type info for struct member access
     int locals_only_count = collect_local_type_info(node->fundef.body, NULL);
@@ -1469,7 +1594,7 @@ void gen_func(ASTNode *node, StringBuilder *sb)
     }
 
     // Function body
-    gen_stmt(node->fundef.body, sb, params, param_count, locals, local_count);
+    gen_stmt(cc, node->fundef.body, sb, params, param_count, locals, local_count);
 
 
     sb_append(sb, "  addis sp, %d\n", (local_count + param_count) * SLOT_SIZE);
@@ -1490,6 +1615,8 @@ void gen_func(ASTNode *node, StringBuilder *sb)
 
 char *codegen(ASTNode *root)
 {
+    CompilerContext ctx = {0};
+    CompilerContext *cc = &ctx;
     StringBuilder sb;
     sb_init(&sb);
 
@@ -1516,7 +1643,7 @@ char *codegen(ASTNode *root)
                             mname = mem->var_decl.name ? mem->var_decl.name : "";
                             set_localinfo_from_type(&tmp, mem->var_decl.var_type);
                             if (mem->var_decl.var_type) {
-                                member_slots = slots_for_type(mem->var_decl.var_type);
+                                member_slots = slots_for_type(cc, mem->var_decl.var_type);
                                 if (member_slots < 1) member_slots = 1;
                             }
                         } else if (mem->type == AST_STRUCT_MEMBER) {
@@ -1565,7 +1692,7 @@ char *codegen(ASTNode *root)
                             mname = mem->var_decl.name ? mem->var_decl.name : "";
                             set_localinfo_from_type(&tmp, mem->var_decl.var_type);
                             if (mem->var_decl.var_type) {
-                                member_slots = slots_for_type(mem->var_decl.var_type);
+                                member_slots = slots_for_type(cc, mem->var_decl.var_type);
                                 if (member_slots < 1) member_slots = 1;
                             }
                         } else if (mem->type == AST_STRUCT_MEMBER) {
@@ -1608,7 +1735,7 @@ char *codegen(ASTNode *root)
         ASTNode *fn = root->block.stmts[i];
         if (fn->type == AST_FUNDEF && strcmp(fn->fundef.name, "main") == 0)
         {
-            gen_func(fn, &sb);
+            gen_func(cc, fn, &sb);
             break;
         }
     }
@@ -1618,7 +1745,7 @@ char *codegen(ASTNode *root)
         ASTNode *fn = root->block.stmts[i];
         if (fn->type == AST_FUNDEF && strcmp(fn->fundef.name, "main") != 0)
         {
-            gen_func(fn, &sb);
+            gen_func(cc, fn, &sb);
         }
     }
     // Append data (string literals) at the end

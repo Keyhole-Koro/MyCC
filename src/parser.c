@@ -96,6 +96,13 @@ ASTNode *new_char_literal(char *str) {
     return node;
 }
 
+ASTNode *new_sizeof(ASTNode *expr) {
+    ASTNode *node = calloc(1, sizeof(ASTNode));
+    node->type = AST_SIZEOF;
+    node->sizeof_expr.expr = expr;
+    return node;
+}
+
 
 ASTNode *new_type_array(ASTNode *elem_type, int size) {
     ASTNode *node = malloc(sizeof(ASTNode));
@@ -623,6 +630,13 @@ ASTNode *parse_unary(Token **cur) {
         *cur = (*cur)->next;
         return new_unary(DEC, parse_unary(cur));
     }
+    if ((*cur)->kind == SIZEOF) {
+        *cur = (*cur)->next;
+        if (!expect(cur, L_PARENTHESES)) parse_error("expected '(' after sizeof", token_head, *cur);
+        ASTNode *inner = parse_expr(cur);
+        if (!expect(cur, R_PARENTHESES)) parse_error("expected ')' after sizeof expression", token_head, *cur);
+        return new_sizeof(inner);
+    }
     if ((*cur)->kind == STRING_LITERAL) {
         ASTNode *node = new_string_literal((*cur)->value);
         *cur = (*cur)->next;
@@ -743,7 +757,20 @@ ASTNode* parse_param(Token **cur) {
     if ((*cur)->kind != IDENTIFIER) parse_error("expected param name", token_head, *cur);
     char *name = (*cur)->value;
     *cur = (*cur)->next;
-    return new_param(type, name);
+
+    ASTNode *final_type = type;
+    while ((*cur)->kind == L_BRACKET) {
+        *cur = (*cur)->next;
+        int size = -1;
+        if ((*cur)->kind == NUMBER) {
+            size = atoi((*cur)->value);
+            *cur = (*cur)->next;
+        }
+        if (!expect(cur, R_BRACKET)) parse_error("expected ']' for parameter array", token_head, *cur);
+        final_type = new_type_array(final_type, size);
+    }
+
+    return new_param(final_type, name);
 }
 
 ASTNode** parse_param_list(Token **cur, int *out_count) {
@@ -1038,6 +1065,10 @@ void print_ast(ASTNode *node, int indent) {
         }
         print_ast(node->unary.operand, indent+1);
         break;
+    case AST_SIZEOF:
+        INDENT; printf("Sizeof\n");
+        print_ast(node->sizeof_expr.expr, indent+1);
+        break;
     case AST_EXPR_STMT:
         INDENT; printf("ExprStmt\n");
         print_ast(node->expr_stmt.expr, indent+1);
@@ -1214,6 +1245,10 @@ void fprint_ast(FILE *out, ASTNode *node, int indent) {
             default: fprintf(out, "Unary: %d\n", node->unary.op); break;
         }
         fprint_ast(out, node->unary.operand, indent+1);
+        break;
+    case AST_SIZEOF:
+        INDENT; fprintf(out, "Sizeof\n");
+        fprint_ast(out, node->sizeof_expr.expr, indent+1);
         break;
     case AST_EXPR_STMT:
         INDENT; fprintf(out, "ExprStmt\n");
@@ -1436,6 +1471,9 @@ void free_ast(ASTNode *node) {
             for (int i = 0; i < node->init_list.count; i++)
                 free_ast(node->init_list.elements[i]);
             free(node->init_list.elements);
+            break;
+        case AST_SIZEOF:
+            free_ast(node->sizeof_expr.expr);
             break;
         case AST_WHILE:
             free_ast(node->while_stmt.cond);

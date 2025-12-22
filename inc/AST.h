@@ -32,6 +32,7 @@ typedef enum {
     AST_BREAK,
     AST_CONTINUE,
     AST_INIT_LIST,
+    AST_SIZEOF,
 } ASTNodeType;
 
 typedef enum {
@@ -139,6 +140,9 @@ struct ASTNode {
             ASTNode **elements;
             int count;
         } init_list;
+        struct {
+            ASTNode *expr;
+        } sizeof_expr;
     };
 };
 
