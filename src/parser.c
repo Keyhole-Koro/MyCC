@@ -254,6 +254,14 @@ ASTNode *new_while(ASTNode *cond, ASTNode *body) {
     return node;
 }
 
+ASTNode *new_do_while(ASTNode *cond, ASTNode *body) {
+    ASTNode *node = malloc(sizeof(ASTNode));
+    node->type = AST_DO_WHILE;
+    node->do_while_stmt.cond = cond;
+    node->do_while_stmt.body = body;
+    return node;
+}
+
 ASTNode *new_for(ASTNode *init, ASTNode *cond, ASTNode *inc, ASTNode *body) {
     ASTNode *node = malloc(sizeof(ASTNode));
     node->type = AST_FOR;
@@ -812,6 +820,17 @@ ASTNode *parse_while_stmt(Token **cur) {
     return new_while(cond, body);
 }
 
+ASTNode *parse_do_while_stmt(Token **cur) {
+    if (!expect(cur, DO)) parse_error("expected 'do'", token_head, *cur);
+    ASTNode *body = parse_stmt(cur);
+    if (!expect(cur, WHILE)) parse_error("expected 'while' after do-body", token_head, *cur);
+    if (!expect(cur, L_PARENTHESES)) parse_error("expected '(' after while", token_head, *cur);
+    ASTNode *cond = parse_expr(cur);
+    if (!expect(cur, R_PARENTHESES)) parse_error("expected ')'", token_head, *cur);
+    if (!expect(cur, SEMICOLON)) parse_error("expected ';' after do-while", token_head, *cur);
+    return new_do_while(cond, body);
+}
+
 ASTNode *parse_for_stmt(Token **cur) {
     if (!expect(cur, FOR)) parse_error("expected 'for'", token_head, *cur);
     if (!expect(cur, L_PARENTHESES)) parse_error("expected '(' after for", token_head, *cur);
@@ -942,6 +961,7 @@ ASTNode *parse_variable_assignment(Token **cur) {
 ASTNode *parse_stmt(Token **cur) {
     if ((*cur)->kind == IF) return parse_if_stmt(cur);
     if ((*cur)->kind == WHILE) return parse_while_stmt(cur);
+    if ((*cur)->kind == DO) return parse_do_while_stmt(cur);
     if ((*cur)->kind == FOR) return parse_for_stmt(cur);
     if ((*cur)->kind == RETURN) return parse_return_stmt(cur);
 
@@ -1478,6 +1498,10 @@ void free_ast(ASTNode *node) {
         case AST_WHILE:
             free_ast(node->while_stmt.cond);
             free_ast(node->while_stmt.body);
+            break;
+        case AST_DO_WHILE:
+            free_ast(node->do_while_stmt.cond);
+            free_ast(node->do_while_stmt.body);
             break;
         case AST_FOR:
             if (node->for_stmt.init) free_ast(node->for_stmt.init);

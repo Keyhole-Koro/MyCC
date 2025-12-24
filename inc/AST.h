@@ -31,6 +31,7 @@ typedef enum {
     AST_ARROW_ACCESS,
     AST_BREAK,
     AST_CONTINUE,
+    AST_DO_WHILE,
     AST_INIT_LIST,
     AST_SIZEOF,
 } ASTNodeType;
@@ -96,6 +97,11 @@ struct ASTNode {
             ASTNode *cond;
             ASTNode *body;
         } while_stmt;
+
+        struct {
+            ASTNode *cond;
+            ASTNode *body;
+        } do_while_stmt;
         
         struct {
             ASTNode *init;
