@@ -622,6 +622,14 @@ ASTNode *parse_unary(Token **cur) {
         *cur = (*cur)->next;
         return new_unary(SUB, parse_unary(cur));
     }
+    if ((*cur)->kind == BITNOT) {
+        *cur = (*cur)->next;
+        return new_unary(BITNOT, parse_unary(cur));
+    }
+    if ((*cur)->kind == NOT) {
+        *cur = (*cur)->next;
+        return new_unary(NOT, parse_unary(cur));
+    }
     if ((*cur)->kind == AMPERSAND) {
         *cur = (*cur)->next;
         return new_unary(AMPERSAND, parse_unary(cur));
@@ -728,12 +736,40 @@ ASTNode *parse_equality(Token **cur) {
     }
     return node;
 }
+
+ASTNode *parse_bitwise_and(Token **cur) {
+    ASTNode *node = parse_equality(cur);
+    while ((*cur)->kind == AMPERSAND) {
+        *cur = (*cur)->next;
+        node = new_binary(AMPERSAND, node, parse_equality(cur));
+    }
+    return node;
+}
+
+ASTNode *parse_bitwise_xor(Token **cur) {
+    ASTNode *node = parse_bitwise_and(cur);
+    while ((*cur)->kind == BITXOR) {
+        *cur = (*cur)->next;
+        node = new_binary(BITXOR, node, parse_bitwise_and(cur));
+    }
+    return node;
+}
+
+ASTNode *parse_bitwise_or(Token **cur) {
+    ASTNode *node = parse_bitwise_xor(cur);
+    while ((*cur)->kind == BITOR) {
+        *cur = (*cur)->next;
+        node = new_binary(BITOR, node, parse_bitwise_xor(cur));
+    }
+    return node;
+}
+
 // &&
 ASTNode *parse_logical_and(Token **cur) {
-    ASTNode *node = parse_equality(cur);
+    ASTNode *node = parse_bitwise_or(cur);
     while ((*cur)->kind == LAND) {
         *cur = (*cur)->next;
-        node = new_binary(LAND, node, parse_equality(cur));
+        node = new_binary(LAND, node, parse_bitwise_or(cur));
     }
     return node;
 }

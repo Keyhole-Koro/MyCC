@@ -970,7 +970,8 @@ static void gen_expr_binop(CompilerContext *cc, ASTNode *node, StringBuilder *sb
         sb_append(sb, "\n; addition\n  add  r1, r2\n");
         break;
     case SUB:
-        sb_append(sb, "\n; subtraction\n  sub  r1, r2\n");
+        sb_append(sb, "\n; subtraction\n  sub  r2, r1\n");
+        sb_append(sb, "  mov r1, r2\n");
         break;
     case ASTARISK:
         sb_append(sb, "\n; multiply r2 * r1\n");
@@ -1015,6 +1016,46 @@ static void gen_expr_binop(CompilerContext *cc, ASTNode *node, StringBuilder *sb
         sb_append(sb, "  mov r1, r2\n");
         break;
         
+    case AMPERSAND:
+        sb_append(sb, "\n; bitwise AND\n  and r1, r2\n");
+        break;
+    case BITOR:
+        sb_append(sb, "\n; bitwise OR\n  or r1, r2\n");
+        break;
+    case BITXOR:
+        sb_append(sb, "\n; bitwise XOR\n  xor r1, r2\n");
+        break;
+    case LSH: {
+        sb_append(sb, "\n; bitwise left shift\n");
+        sb_append(sb, "  mov r4, r2\n"); // r4 = value (LHS)
+        sb_append(sb, "  mov r5, r1\n"); // r5 = count (RHS)
+        int lbl = next_label(cc);
+        sb_append(sb, "b_lsh_loop_%d:\n", lbl);
+        sb_append(sb, "  cmp r5, 0\n");
+        sb_append(sb, "  jz b_lsh_end_%d\n", lbl);
+        sb_append(sb, "  shl r4\n");
+        sb_append(sb, "  addis r5, -1\n");
+        sb_append(sb, "  jmp b_lsh_loop_%d\n", lbl);
+        sb_append(sb, "b_lsh_end_%d:\n", lbl);
+        sb_append(sb, "  mov r1, r4\n");
+        break;
+    }
+    case RSH: {
+        sb_append(sb, "\n; bitwise right shift\n");
+        sb_append(sb, "  mov r4, r2\n"); // r4 = value (LHS)
+        sb_append(sb, "  mov r5, r1\n"); // r5 = count (RHS)
+        int lbl = next_label(cc);
+        sb_append(sb, "b_rsh_loop_%d:\n", lbl);
+        sb_append(sb, "  cmp r5, 0\n");
+        sb_append(sb, "  jz b_rsh_end_%d\n", lbl);
+        sb_append(sb, "  shr r4\n");
+        sb_append(sb, "  addis r5, -1\n");
+        sb_append(sb, "  jmp b_rsh_loop_%d\n", lbl);
+        sb_append(sb, "b_rsh_end_%d:\n", lbl);
+        sb_append(sb, "  mov r1, r4\n");
+        break;
+    }
+
     case LAND: {
             int label = next_label(cc);
             char label_false[32], label_end[32];
@@ -1389,6 +1430,32 @@ static void _gen_expr(CompilerContext *cc, ASTNode *node, StringBuilder *sb, con
     case AST_UNARY:
         switch (node->unary.op)
         {
+        case SUB: {
+            // Unary minus: 0 - operand
+            _gen_expr(cc, node->unary.operand, sb, target_reg, params, param_count, locals, local_count, 0);
+            const char *zero_reg = (strcmp(target_reg, "r1") == 0) ? "r2" : "r1";
+            sb_append(sb, "  mov %s, 0\n", zero_reg);
+            sb_append(sb, "  sub %s, %s\n", zero_reg, target_reg);
+            sb_append(sb, "  mov %s, %s\n", target_reg, zero_reg);
+            break;
+        }
+        case BITNOT:
+            _gen_expr(cc, node->unary.operand, sb, target_reg, params, param_count, locals, local_count, 0);
+            sb_append(sb, "  movi r3, -1\n");
+            sb_append(sb, "  xor %s, r3\n", target_reg);
+            break;
+        case NOT: {
+            _gen_expr(cc, node->unary.operand, sb, target_reg, params, param_count, locals, local_count, 0);
+            int lbl_true = next_label(cc);
+            int lbl_end = next_label(cc);
+            sb_append(sb, "  cmp %s, 0\n", target_reg);
+            sb_append(sb, "  jz b_not_true_%d\n", lbl_true);
+            sb_append(sb, "  movi %s, 0\n", target_reg);
+            sb_append(sb, "  jmp b_not_end_%d\n", lbl_end);
+            sb_append(sb, "b_not_true_%d:\n", lbl_true);
+            sb_append(sb, "  movi %s, 1\n", target_reg);
+            sb_append(sb, "b_not_end_%d:\n", lbl_end);
+            break; }
         case ASTARISK: // *
             _gen_expr(cc, node->unary.operand, sb, "r3",
                       params, param_count, locals, local_count,
