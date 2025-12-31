@@ -34,6 +34,7 @@ typedef enum {
     AST_DO_WHILE,
     AST_INIT_LIST,
     AST_SIZEOF,
+    AST_TERNARY,
 } ASTNodeType;
 
 typedef enum {
@@ -149,6 +150,11 @@ struct ASTNode {
         struct {
             ASTNode *expr;
         } sizeof_expr;
+        struct {
+            ASTNode *cond;
+            ASTNode *then_expr;
+            ASTNode *else_expr;
+        } ternary;
     };
 };
 

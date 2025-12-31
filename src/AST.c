@@ -32,6 +32,7 @@ char *astType2str(ASTNodeType type) {
         case AST_DO_WHILE: return "AST_DO_WHILE";
         case AST_INIT_LIST: return "AST_INIT_LIST";
         case AST_SIZEOF: return "AST_SIZEOF";
+        case AST_TERNARY: return "AST_TERNARY";
     }
     return "<unknown>";
 }

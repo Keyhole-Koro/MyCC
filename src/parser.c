@@ -172,6 +172,14 @@ ASTNode *new_assign(ASTNode *left, ASTNode *right) {
     node->assign.right = right;
     return node;
 }
+ASTNode *new_ternary(ASTNode *cond, ASTNode *then_expr, ASTNode *else_expr) {
+    ASTNode *node = malloc(sizeof(ASTNode));
+    node->type = AST_TERNARY;
+    node->ternary.cond = cond;
+    node->ternary.then_expr = then_expr;
+    node->ternary.else_expr = else_expr;
+    return node;
+}
 ASTNode *new_type_node(ASTNode *base_type, int pointer_level, int modifiers) {
     ASTNode *node = malloc(sizeof(ASTNode));
     node->type = AST_TYPE;
@@ -784,8 +792,22 @@ ASTNode *parse_logical_or(Token **cur) {
     return node;
 }
 
+// ?: (right-associative)
+ASTNode *parse_conditional(Token **cur) {
+    ASTNode *cond = parse_logical_or(cur);
+    if ((*cur)->kind == QUESTION) {
+        *cur = (*cur)->next;
+        ASTNode *then_expr = parse_expr(cur);
+        if (!expect(cur, COLON))
+            parse_error("expected ':' in ternary expression", token_head, *cur);
+        ASTNode *else_expr = parse_conditional(cur);
+        return new_ternary(cond, then_expr, else_expr);
+    }
+    return cond;
+}
+
 ASTNode *parse_assign_expr(Token **cur) {
-    ASTNode *node = parse_logical_or(cur);
+    ASTNode *node = parse_conditional(cur);
     if ((*cur)->kind == ASSIGN) {
         *cur = (*cur)->next;
         node = new_assign(node, parse_assign_expr(cur));
@@ -1121,6 +1143,12 @@ void print_ast(ASTNode *node, int indent) {
         }
         print_ast(node->unary.operand, indent+1);
         break;
+    case AST_TERNARY:
+        INDENT; printf("Ternary\n");
+        print_ast(node->ternary.cond, indent+1);
+        print_ast(node->ternary.then_expr, indent+1);
+        print_ast(node->ternary.else_expr, indent+1);
+        break;
     case AST_SIZEOF:
         INDENT; printf("Sizeof\n");
         print_ast(node->sizeof_expr.expr, indent+1);
@@ -1302,6 +1330,12 @@ void fprint_ast(FILE *out, ASTNode *node, int indent) {
         }
         fprint_ast(out, node->unary.operand, indent+1);
         break;
+    case AST_TERNARY:
+        INDENT; fprintf(out, "Ternary\n");
+        fprint_ast(out, node->ternary.cond, indent+1);
+        fprint_ast(out, node->ternary.then_expr, indent+1);
+        fprint_ast(out, node->ternary.else_expr, indent+1);
+        break;
     case AST_SIZEOF:
         INDENT; fprintf(out, "Sizeof\n");
         fprint_ast(out, node->sizeof_expr.expr, indent+1);
@@ -1395,7 +1429,7 @@ void fprint_ast(FILE *out, ASTNode *node, int indent) {
         INDENT; fprintf(out, "StringLiteral: \"%s\"\n", node->string_literal.value);
         break;
     case AST_CHAR_LITERAL:
-        INDENT; fprintf(out, "CharLiteral: '%c'\n", node->char_literal.value ? node->char_literal.value[0] : '\\0');
+        INDENT; fprintf(out, "CharLiteral: '%c'\n", node->char_literal.value ? node->char_literal.value[0] : '\0');
         break;
     case AST_MEMBER_ACCESS:
         INDENT; fprintf(out, "MemberAccess: %s\n", node->member_access.member);
@@ -1459,6 +1493,11 @@ void free_ast(ASTNode *node) {
             break;
         case AST_UNARY:
             free_ast(node->unary.operand);
+            break;
+        case AST_TERNARY:
+            free_ast(node->ternary.cond);
+            free_ast(node->ternary.then_expr);
+            free_ast(node->ternary.else_expr);
             break;
         case AST_EXPR_STMT:
             free_ast(node->expr_stmt.expr);

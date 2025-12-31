@@ -66,6 +66,7 @@ typedef struct {
     StringBuilder data_sb; // holds emitted data bytes
     int data_sb_inited;
     int label_counter;
+    const char *return_label;
 } CompilerContext;
 
 #define cg_structs       (cc->structs)
@@ -324,7 +325,7 @@ static int find_var_offset(const char *name, char **params, int param_count,
             *is_param = 1;
         if (idx < 3)
             return param_offset(idx);
-        return 4 + (idx - 3) * SLOT_SIZE;
+        return 8 + (idx - 3) * SLOT_SIZE;
     }
     idx = local_index_last(name, locals, local_count);
     if (idx >= 0)
@@ -423,7 +424,7 @@ static void emit_load_var(CompilerContext *cc, StringBuilder *sb, const char *na
         else
         {
             // bp+N
-            offset = 4 + (idx - 3) * SLOT_SIZE;
+            offset = 8 + (idx - 3) * SLOT_SIZE;
             sb_append(sb, "  \n; load param '%s' (arg%d, stack) into %s\n", name, idx + 1, target_reg);
             sb_append(sb, "  mov   r3, bp\n");
             sb_append(sb, "  addis r3, %d\n", offset);
@@ -499,6 +500,9 @@ static void emit_addr_of_var(CompilerContext *cc, StringBuilder *sb, const char 
     sb_append(sb, "  addis %s, %d\n", target_reg, offset);
 }
 
+static int is_comparison_op(TokenKind op) {
+    return op == EQ || op == NEQ || op == LT || op == GT || op == LTE || op == GTE;
+}
 
 // Emit conditional jump based on binary comparison operator
 // If the condition is true, jump to `trueLabel`
@@ -724,6 +728,18 @@ static int infer_expr_type(CompilerContext *cc, ASTNode *expr, TypeInfo *out) {
             return 1;
         }
         return 0;
+    case AST_TERNARY: {
+        TypeInfo t = {0};
+        if (infer_expr_type(cc, expr->ternary.then_expr, &t)) {
+            *out = t;
+            return 1;
+        }
+        if (infer_expr_type(cc, expr->ternary.else_expr, &t)) {
+            *out = t;
+            return 1;
+        }
+        return 0;
+    }
     default:
         return 0;
     }
@@ -985,6 +1001,56 @@ static void gen_lvalue_addr(CompilerContext *cc, ASTNode *node, StringBuilder *s
 static void gen_expr_binop(CompilerContext *cc, ASTNode *node, StringBuilder *sb, const char *target_reg,
                     char **params, int param_count, char **locals, int local_count)
 {
+    if (node->binary.op == LAND) {
+        int label = next_label(cc);
+        char label_false[32], label_end[32];
+        snprintf(label_false, sizeof(label_false), "b_land_false_%d", label);
+        snprintf(label_end, sizeof(label_end), "b_land_end_%d", label);
+
+        gen_expr(cc, node->binary.left, sb, "r1", params, param_count, locals, local_count);
+        sb_append(sb, "  cmp r1, 0\n");
+        sb_append(sb, "  jz %s\n", label_false);
+
+        gen_expr(cc, node->binary.right, sb, "r1", params, param_count, locals, local_count);
+        sb_append(sb, "  cmp r1, 0\n");
+        sb_append(sb, "  jz %s\n", label_false);
+
+        sb_append(sb, "  movi r1, 1\n");
+        sb_append(sb, "  jmp %s\n", label_end);
+        sb_append(sb, "%s:\n", label_false);
+        sb_append(sb, "  movi r1, 0\n");
+        sb_append(sb, "%s:\n", label_end);
+
+        if (strcmp(target_reg, "r1") != 0)
+            sb_append(sb, "  mov %s, r1\n", target_reg);
+        return;
+    }
+
+    if (node->binary.op == LOR) {
+        int label = next_label(cc);
+        char label_true[32], label_end[32];
+        snprintf(label_true, sizeof(label_true), "b_lor_true_%d", label);
+        snprintf(label_end, sizeof(label_end), "b_lor_end_%d", label);
+
+        gen_expr(cc, node->binary.left, sb, "r1", params, param_count, locals, local_count);
+        sb_append(sb, "  cmp r1, 0\n");
+        sb_append(sb, "  jnz %s\n", label_true);
+
+        gen_expr(cc, node->binary.right, sb, "r1", params, param_count, locals, local_count);
+        sb_append(sb, "  cmp r1, 0\n");
+        sb_append(sb, "  jnz %s\n", label_true);
+
+        sb_append(sb, "  movi r1, 0\n");
+        sb_append(sb, "  jmp %s\n", label_end);
+        sb_append(sb, "%s:\n", label_true);
+        sb_append(sb, "  movi r1, 1\n");
+        sb_append(sb, "%s:\n", label_end);
+
+        if (strcmp(target_reg, "r1") != 0)
+            sb_append(sb, "  mov %s, r1\n", target_reg);
+        return;
+    }
+
     // Pointer arithmetic with constant index: scale by element size
     TypeInfo lhs_t = {0}, rhs_t = {0};
     int lhs_ptr = infer_expr_type(cc, node->binary.left, &lhs_t) &&
@@ -1032,6 +1098,9 @@ static void gen_expr_binop(CompilerContext *cc, ASTNode *node, StringBuilder *sb
         gen_expr(cc, node->binary.left, sb, "r2", params, param_count, locals, local_count);
     }
 
+    // Preserve left operand across right evaluation (calls clobber r2)
+    sb_append(sb, "  push r2\n");
+
     // --- Generate code for the right-hand operand ---
     if (node->binary.right->type == AST_UNARY &&
         node->binary.right->unary.op == ASTARISK) {
@@ -1041,6 +1110,8 @@ static void gen_expr_binop(CompilerContext *cc, ASTNode *node, StringBuilder *sb
     } else {
         gen_expr(cc, node->binary.right, sb, "r1", params, param_count, locals, local_count);
     }
+
+    sb_append(sb, "  pop r2\n");
 
 
     switch (node->binary.op)
@@ -1135,66 +1206,48 @@ static void gen_expr_binop(CompilerContext *cc, ASTNode *node, StringBuilder *sb
         break;
     }
 
-    case LAND: {
-            int label = next_label(cc);
-            char label_false[32], label_end[32];
-            snprintf(label_false, sizeof(label_false), "b_land_false_%d", label);
-            snprintf(label_end, sizeof(label_end), "b_land_end_%d", label);
-    
-            // Logical AND (&&) with short-circuit evaluation
-            // Evaluate left operand
-            gen_expr(cc, node->binary.left, sb, "r1", params, param_count, locals, local_count);
-            sb_append(sb, "  cmp r1, 0\n");
-            sb_append(sb, "  jz %s\n", label_false);  // If left is false → jump to false
-   
-            // Evaluate right operand
-            gen_expr(cc, node->binary.right, sb, "r1", params, param_count, locals, local_count);
-            sb_append(sb, "  cmp r1, 0\n");
-            sb_append(sb, "  jz %s\n", label_false);  // If right is false → jump to false
-    
-            // Both are non-zero → result is true (1)
-            sb_append(sb, "  movi r1, 1\n");
-            sb_append(sb, "  jmp %s\n", label_end);
-    
-            // False case
-            sb_append(sb, "%s:\n", label_false);
-            sb_append(sb, "  movi r1, 0\n");
-    
-            // End label
-            sb_append(sb, "%s:\n", label_end);
+    case EQ:
+    case NEQ:
+    case LT:
+    case GT:
+    case LTE:
+    case GTE: {
+        int label = next_label(cc);
+        char label_true[32], label_end[32];
+        snprintf(label_true, sizeof(label_true), "b_cmp_true_%d", label);
+        snprintf(label_end, sizeof(label_end), "b_cmp_end_%d", label);
+        sb_append(sb, "  cmp r2, r1\n");
+        switch (node->binary.op) {
+        case EQ:
+            sb_append(sb, "  jz %s\n", label_true);
+            break;
+        case NEQ:
+            sb_append(sb, "  jnz %s\n", label_true);
+            break;
+        case LT:
+            sb_append(sb, "  jl %s\n", label_true);
+            break;
+        case GT:
+            sb_append(sb, "  jg %s\n", label_true);
+            break;
+        case LTE:
+            sb_append(sb, "  jl %s\n", label_true);
+            sb_append(sb, "  jz %s\n", label_true);
+            break;
+        case GTE:
+            sb_append(sb, "  jg %s\n", label_true);
+            sb_append(sb, "  jz %s\n", label_true);
+            break;
+        default:
             break;
         }
-    
-        case LOR: {
-            int label = next_label(cc);
-            char label_true[32], label_end[32];
-            snprintf(label_true, sizeof(label_true), "b_lor_true_%d", label);
-            snprintf(label_end, sizeof(label_end), "b_lor_end_%d", label);
-    
-            // Logical OR (||) with short-circuit evaluation
-            // Evaluate left operand
-            gen_expr(cc, node->binary.left, sb, "r1", params, param_count, locals, local_count);
-            sb_append(sb, "  cmp r1, 0\n");
-            sb_append(sb, "  jnz %s\n", label_true);  // If left is true → jump to true
-   
-            // Evaluate right operand
-            gen_expr(cc, node->binary.right, sb, "r1", params, param_count, locals, local_count);
-            sb_append(sb, "  cmp r1, 0\n");
-            sb_append(sb, "  jnz %s\n", label_true);  // If right is true → jump to true
-    
-            // Both are zero → result is false (0)
-            sb_append(sb, "  movi r1, 0\n");
-            sb_append(sb, "  jmp %s\n", label_end);
-    
-            // True case
-            sb_append(sb, "%s:\n", label_true);
-            sb_append(sb, "  movi r1, 1\n");
-    
-            // End label
-            sb_append(sb, "%s:\n", label_end);
-            break;
-        }
-    
+        sb_append(sb, "  movi r1, 0\n");
+        sb_append(sb, "  jmp %s\n", label_end);
+        sb_append(sb, "%s:\n", label_true);
+        sb_append(sb, "  movi r1, 1\n");
+        sb_append(sb, "%s:\n", label_end);
+        break;
+    }
 
     default:
         fprintf(stderr, "Codegen error: unknown binary op\n");
@@ -1266,8 +1319,15 @@ static void gen_if(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
 
     if (cond->type == AST_BINARY)
     {
-        emit_cond_jump(cc, cond->binary.left, cond->binary.right, cond->binary.op, sb,
-                       params, param_count, locals, local_count, then_label, else_label);
+        if (is_comparison_op(cond->binary.op)) {
+            emit_cond_jump(cc, cond->binary.left, cond->binary.right, cond->binary.op, sb,
+                           params, param_count, locals, local_count, then_label, else_label);
+        } else {
+            gen_expr(cc, cond, sb, "r1", params, param_count, locals, local_count);
+            sb_append(sb, "  cmp r1, 0\n");
+            sb_append(sb, "  jnz %s\n", then_label);
+            sb_append(sb, "  jmp %s\n", else_label);
+        }
     }
     else
     {
@@ -1313,10 +1373,17 @@ static void gen_for(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
 
     if (node->for_stmt.cond && node->for_stmt.cond->type == AST_BINARY)
     {
-        emit_cond_jump(cc, node->for_stmt.cond->binary.left, node->for_stmt.cond->binary.right,
-                       node->for_stmt.cond->binary.op, sb,
-                       params, param_count, locals, local_count,
-                       for_body, for_end);
+        if (is_comparison_op(node->for_stmt.cond->binary.op)) {
+            emit_cond_jump(cc, node->for_stmt.cond->binary.left, node->for_stmt.cond->binary.right,
+                           node->for_stmt.cond->binary.op, sb,
+                           params, param_count, locals, local_count,
+                           for_body, for_end);
+        } else {
+            gen_expr(cc, node->for_stmt.cond, sb, "r1", params, param_count, locals, local_count);
+            sb_append(sb, "  cmp r1, 0\n");
+            sb_append(sb, "  jnz %s\n", for_body);
+            sb_append(sb, "  jmp %s\n", for_end);
+        }
     }
     else if (node->for_stmt.cond)
     {
@@ -1360,13 +1427,20 @@ static void gen_while(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
     sb_append(sb, "%s:\n", cond_label);
 
     if (node->while_stmt.cond->type == AST_BINARY) {
-        emit_cond_jump(cc,
-            node->while_stmt.cond->binary.left,
-            node->while_stmt.cond->binary.right,
-            node->while_stmt.cond->binary.op,
-            sb, params, param_count, locals, local_count,
-            body_label, end_label
-        );
+        if (is_comparison_op(node->while_stmt.cond->binary.op)) {
+            emit_cond_jump(cc,
+                node->while_stmt.cond->binary.left,
+                node->while_stmt.cond->binary.right,
+                node->while_stmt.cond->binary.op,
+                sb, params, param_count, locals, local_count,
+                body_label, end_label
+            );
+        } else {
+            gen_expr(cc, node->while_stmt.cond, sb, "r1", params, param_count, locals, local_count);
+            sb_append(sb, "  cmp r1, 0\n");
+            sb_append(sb, "  jnz %s\n", body_label);
+            sb_append(sb, "  jmp %s\n", end_label);
+        }
     } else {
         gen_expr(cc, node->while_stmt.cond, sb, "r1", params, param_count, locals, local_count);
         sb_append(sb, "  cmp r1, 0\n");
@@ -1417,13 +1491,20 @@ static void gen_do_while(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
     sb_append(sb, "%s:\n", cond_label);
 
     if (node->do_while_stmt.cond->type == AST_BINARY) {
-        emit_cond_jump(cc,
-            node->do_while_stmt.cond->binary.left,
-            node->do_while_stmt.cond->binary.right,
-            node->do_while_stmt.cond->binary.op,
-            sb, params, param_count, locals, local_count,
-            body_label, end_label
-        );
+        if (is_comparison_op(node->do_while_stmt.cond->binary.op)) {
+            emit_cond_jump(cc,
+                node->do_while_stmt.cond->binary.left,
+                node->do_while_stmt.cond->binary.right,
+                node->do_while_stmt.cond->binary.op,
+                sb, params, param_count, locals, local_count,
+                body_label, end_label
+            );
+        } else {
+            gen_expr(cc, node->do_while_stmt.cond, sb, "r1", params, param_count, locals, local_count);
+            sb_append(sb, "  cmp r1, 0\n");
+            sb_append(sb, "  jnz %s\n", body_label);
+            sb_append(sb, "  jmp %s\n", end_label);
+        }
     } else {
         gen_expr(cc, node->do_while_stmt.cond, sb, "r1", params, param_count, locals, local_count);
         sb_append(sb, "  cmp r1, 0\n");
@@ -1506,6 +1587,21 @@ static void _gen_expr(CompilerContext *cc, ASTNode *node, StringBuilder *sb, con
     case AST_ASSIGN:
         gen_assign(cc, node, sb, params, param_count, locals, local_count, target_reg);
         break;
+    case AST_TERNARY: {
+        int lbl = next_label(cc);
+        char label_else[32], label_end[32];
+        snprintf(label_else, sizeof(label_else), "b_ternary_else_%d", lbl);
+        snprintf(label_end, sizeof(label_end), "b_ternary_end_%d", lbl);
+        gen_expr(cc, node->ternary.cond, sb, "r1", params, param_count, locals, local_count);
+        sb_append(sb, "  cmp r1, 0\n");
+        sb_append(sb, "  jz %s\n", label_else);
+        gen_expr(cc, node->ternary.then_expr, sb, target_reg, params, param_count, locals, local_count);
+        sb_append(sb, "  jmp %s\n", label_end);
+        sb_append(sb, "%s:\n", label_else);
+        gen_expr(cc, node->ternary.else_expr, sb, target_reg, params, param_count, locals, local_count);
+        sb_append(sb, "%s:\n", label_end);
+        break;
+    }
     case AST_NUMBER:
         sb_append(sb, "  \n; load constant %s into %s\n", node->number.value, target_reg);
         sb_append(sb, "  movi  %s, %s\n", target_reg, node->number.value);
@@ -1727,6 +1823,8 @@ static void gen_stmt_internal(CompilerContext *cc, ASTNode *node, StringBuilder 
         gen_expr(cc, node->ret.expr, sb, "r1", params, param_count, locals, local_count);
         // r1 = return value. No 'ret' for main.
         sb_append(sb, "  \n; return\n");
+        if (cc->return_label)
+            sb_append(sb, "  jmp %s\n", cc->return_label);
         break;
     case AST_BLOCK:
         for (int i = 0; i < node->block.count; i++)
@@ -1780,6 +1878,7 @@ void gen_func(CompilerContext *cc, ASTNode *node, StringBuilder *sb)
     sb_append(sb, "\n");
     sb_append(sb, "%s%s:\n", strcmp(fname, "__START__") == 0 ? "" : "f_", fname);
     sb_append(sb, "; prologue\n");
+    sb_append(sb, "  push lr\n");
     sb_append(sb, "  push bp\n");
     sb_append(sb, "  mov bp, sp\n  addis sp, -%d\n",
               (local_count + param_count) * SLOT_SIZE);
@@ -1793,12 +1892,16 @@ void gen_func(CompilerContext *cc, ASTNode *node, StringBuilder *sb)
         sb_append(sb, "  store r3, %s\n", arg_regs[i]);
     }
 
+    char ret_label[32];
+    snprintf(ret_label, sizeof(ret_label), "b_L_ret_%d", next_label(cc));
+    cc->return_label = ret_label;
+
     // Function body
     gen_stmt(cc, node->fundef.body, sb, params, param_count, locals, local_count);
 
-
+    sb_append(sb, "%s:\n", ret_label);
     sb_append(sb, "  addis sp, %d\n", (local_count + param_count) * SLOT_SIZE);
-    sb_append(sb, "; epilogue\n  pop  bp\n");
+    sb_append(sb, "; epilogue\n  pop  bp\n  pop  lr\n");
 
     // Epilogue (not for main)
     if (strcmp(fname, "__START__") != 0)
@@ -1807,6 +1910,8 @@ void gen_func(CompilerContext *cc, ASTNode *node, StringBuilder *sb)
     }
     if (strcmp(fname, "__START__") == 0)
         sb_append(sb, "  halt");
+
+    cc->return_label = NULL;
 
     // cleanup per-function locals info
     if (cg_locals_info) { free(cg_locals_info); cg_locals_info = NULL; }
