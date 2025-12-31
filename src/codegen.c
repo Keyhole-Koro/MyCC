@@ -26,6 +26,7 @@ typedef struct {
     const char *name;       // variable name
     const char *base_type;  // type name (typedef/struct)
     int pointer_level;      // explicit pointer level (excludes array levels)
+    int type_modifiers;     // bitmask of TypeModifier (const etc.)
     int is_array;           // whether the declaration was an array
     int array_length;       // first dimension length if array (legacy)
     int dims[8];            // array dimensions outer->inner (unknown => 0)
@@ -35,6 +36,7 @@ typedef struct {
 typedef struct {
     const char *base_type;
     int pointer_level;
+    int type_modifiers; // TypeModifier bitmask from AST
     int is_array;
     int dims[8];
     int dims_count;
@@ -46,10 +48,17 @@ typedef struct {
     char *label;    // label name like s_0
 } StrItem;
 
+typedef struct {
+    const char *alias;
+    TypeInfo info;
+} TypedefInfo;
+
 // ---- Codegen context (keeps state in one place) ----
 typedef struct {
     StructInfo *structs;
     int struct_count;
+    TypedefInfo *typedefs;
+    int typedef_count;
     LocalInfo *locals_info;
     int locals_count;
     StrItem *strings;
@@ -61,6 +70,8 @@ typedef struct {
 
 #define cg_structs       (cc->structs)
 #define cg_struct_count  (cc->struct_count)
+#define cg_typedefs      (cc->typedefs)
+#define cg_typedef_count (cc->typedef_count)
 #define cg_locals_info   (cc->locals_info)
 #define cg_locals_count  (cc->locals_count)
 #define cg_strings       (cc->strings)
@@ -98,6 +109,34 @@ static const char *intern_string_literal(CompilerContext *cc, const char *s)
     cg_strings = (StrItem*)realloc(cg_strings, sizeof(StrItem) * (cg_string_count + 1));
     cg_strings[cg_string_count++] = it;
     return it.label;
+}
+
+static const TypedefInfo *find_typedef(CompilerContext *cc, const char *alias) {
+    for (int i = 0; i < cg_typedef_count; i++) {
+        if (strcmp(cg_typedefs[i].alias, alias) == 0) return &cg_typedefs[i];
+    }
+    return NULL;
+}
+
+static void resolve_type(CompilerContext *cc, TypeInfo *ti) {
+    if (!ti || !ti->base_type) return;
+    for (int depth = 0; depth < 10; depth++) {
+        const TypedefInfo *td = find_typedef(cc, ti->base_type);
+        if (!td) break;
+        ti->base_type = td->info.base_type;
+        ti->pointer_level += td->info.pointer_level;
+        ti->type_modifiers |= td->info.type_modifiers;
+        if (td->info.is_array) {
+            ti->is_array = 1;
+            int offset = ti->dims_count;
+            int new_count = ti->dims_count + td->info.dims_count;
+            if (new_count > 8) new_count = 8;
+            for (int k = 0; k < td->info.dims_count && (offset + k) < 8; k++) {
+                ti->dims[offset + k] = td->info.dims[k];
+            }
+            ti->dims_count = new_count;
+        }
+    }
 }
 
 static int next_label(CompilerContext *cc) {
@@ -189,7 +228,7 @@ static void gen_while(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
                       char **locals, int local_count,
                       const char *break_label,
                       const char *continue_label);
-static void set_localinfo_from_type(LocalInfo *info, ASTNode *type_node);
+static void set_localinfo_from_type(CompilerContext *cc, LocalInfo *info, ASTNode *type_node);
 static int base_type_is_char(const char *name);
 static int typeinfo_is_byte(const TypeInfo *info);
 static int infer_expr_type(CompilerContext *cc, ASTNode *expr, TypeInfo *out);
@@ -200,6 +239,7 @@ static int typeinfo_total_size_bytes(CompilerContext *cc, const TypeInfo *info);
 static const MemberInfo *find_member_info(CompilerContext *cc, const char *type_name, const char *member);
 static int is_char_scalar_var(CompilerContext *cc, const char *name);
 static int lvalue_is_byte(CompilerContext *cc, ASTNode *node);
+static int lvalue_is_const(CompilerContext *cc, ASTNode *node);
 static void emit_load_from_addr(StringBuilder *sb, const char *target_reg, const char *addr_reg, int is_byte);
 static void emit_store_to_addr(StringBuilder *sb, const char *addr_reg, const char *value_reg, int is_byte);
 static void emit_scale_reg_const(CompilerContext *cc, StringBuilder *sb, const char *reg, long factor);
@@ -304,6 +344,10 @@ static void emit_unary_inc_dec(CompilerContext *cc, ASTNode *node, StringBuilder
 {
     if (!node || node->type != AST_UNARY) {
         fprintf(stderr, "Codegen error: emit_unary_inc_dec on non-unary node\n");
+        exit(1);
+    }
+    if (lvalue_is_const(cc, node->unary.operand)) {
+        fprintf(stderr, "Codegen error: modifying a const value is not allowed\n");
         exit(1);
     }
 
@@ -558,6 +602,7 @@ static int infer_expr_type(CompilerContext *cc, ASTNode *expr, TypeInfo *out) {
     if (!expr || !out) return 0;
     out->base_type = "";
     out->pointer_level = 0;
+    out->type_modifiers = 0;
     out->is_array = 0;
     out->dims_count = 0;
     for (int i = 0; i < 8; i++) out->dims[i] = 0;
@@ -567,6 +612,7 @@ static int infer_expr_type(CompilerContext *cc, ASTNode *expr, TypeInfo *out) {
         if (!li) return 0;
         out->base_type = li->base_type;
         out->pointer_level = li->pointer_level;
+        out->type_modifiers = li->type_modifiers;
         out->is_array = li->is_array;
         out->dims_count = li->dims_count;
         for (int i = 0; i < li->dims_count && i < 8; i++) out->dims[i] = li->dims[i];
@@ -583,6 +629,7 @@ static int infer_expr_type(CompilerContext *cc, ASTNode *expr, TypeInfo *out) {
     case AST_NUMBER:
         out->base_type = "int";
         out->pointer_level = 0;
+        out->type_modifiers = 0;
         out->is_array = 0;
         out->dims_count = 0;
         return 1;
@@ -594,6 +641,7 @@ static int infer_expr_type(CompilerContext *cc, ASTNode *expr, TypeInfo *out) {
         if (!mi) return 0;
         out->base_type = mi->base_type ? mi->base_type : "";
         out->pointer_level = mi->pointer_level;
+        out->type_modifiers = lhs.type_modifiers;
         out->is_array = mi->is_array;
         if (mi->is_array) out->pointer_level += 1;
         out->dims_count = 0;
@@ -607,6 +655,7 @@ static int infer_expr_type(CompilerContext *cc, ASTNode *expr, TypeInfo *out) {
         if (!mi) return 0;
         out->base_type = mi->base_type ? mi->base_type : "";
         out->pointer_level = mi->pointer_level;
+        out->type_modifiers = lhs.type_modifiers;
         out->is_array = mi->is_array;
         if (mi->is_array) out->pointer_level += 1;
         out->dims_count = 0;
@@ -615,6 +664,7 @@ static int infer_expr_type(CompilerContext *cc, ASTNode *expr, TypeInfo *out) {
     case AST_SIZEOF:
         out->base_type = "int";
         out->pointer_level = 0;
+        out->type_modifiers = 0;
         out->is_array = 0;
         out->dims_count = 0;
         return 1;
@@ -657,6 +707,7 @@ static int infer_expr_type(CompilerContext *cc, ASTNode *expr, TypeInfo *out) {
             if (inner.pointer_level <= 0) return 0;
             out->base_type = inner.base_type;
             out->pointer_level = inner.pointer_level - 1;
+            out->type_modifiers = inner.type_modifiers;
             out->dims_count = inner.dims_count;
             for (int i = 0; i < inner.dims_count; i++) out->dims[i] = inner.dims[i];
             out->is_array = (out->dims_count > 0);
@@ -666,6 +717,7 @@ static int infer_expr_type(CompilerContext *cc, ASTNode *expr, TypeInfo *out) {
             if (!infer_expr_type(cc, expr->unary.operand, &inner)) return 0;
             out->base_type = inner.base_type;
             out->pointer_level = inner.pointer_level + 1;
+            out->type_modifiers = inner.type_modifiers;
             out->dims_count = inner.dims_count;
             for (int i = 0; i < inner.dims_count; i++) out->dims[i] = inner.dims[i];
             out->is_array = inner.is_array;
@@ -738,6 +790,12 @@ static int lvalue_is_byte(CompilerContext *cc, ASTNode *node) {
     return typeinfo_is_byte(&info);
 }
 
+static int lvalue_is_const(CompilerContext *cc, ASTNode *node) {
+    TypeInfo info = (TypeInfo){0};
+    if (!infer_expr_type(cc, node, &info)) return 0;
+    return (info.type_modifiers & TYPEMOD_CONST) != 0;
+}
+
 static void emit_load_from_addr(StringBuilder *sb, const char *target_reg, const char *addr_reg, int is_byte) {
     if (is_byte)
         sb_append(sb, "  loadb %s, %s\n", target_reg, addr_reg);
@@ -779,10 +837,11 @@ static const LocalInfo *find_local_info(CompilerContext *cc, const char *name) {
     return NULL;
 }
 
-static void set_localinfo_from_type(LocalInfo *info, ASTNode *type_node) {
+static void set_localinfo_from_type(CompilerContext *cc, LocalInfo *info, ASTNode *type_node) {
     if (!info) return;
     info->base_type = "";
     info->pointer_level = 0;
+    info->type_modifiers = 0;
     info->is_array = 0;
     info->array_length = 0;
     info->dims_count = 0;
@@ -813,37 +872,57 @@ static void set_localinfo_from_type(LocalInfo *info, ASTNode *type_node) {
             info->base_type = bt->identifier.name;
         }
         info->pointer_level = node->type_node.pointer_level;
+        info->type_modifiers = node->type_node.type_modifiers;
     } else {
         info->pointer_level = 0;
     }
+
+    // Resolve typedefs
+    TypeInfo ti;
+    ti.base_type = info->base_type;
+    ti.pointer_level = info->pointer_level;
+    ti.type_modifiers = info->type_modifiers;
+    ti.is_array = info->is_array;
+    ti.dims_count = info->dims_count;
+    for(int i=0; i<8; i++) ti.dims[i] = info->dims[i];
+
+    resolve_type(cc, &ti);
+
+    info->base_type = ti.base_type;
+    info->pointer_level = ti.pointer_level;
+    info->type_modifiers = ti.type_modifiers;
+    info->is_array = ti.is_array;
+    info->dims_count = ti.dims_count;
+    for(int i=0; i<8; i++) info->dims[i] = ti.dims[i];
+    if (info->is_array && info->dims_count > 0) info->array_length = info->dims[0];
 }
 
-static int collect_local_type_info(ASTNode *node, LocalInfo *arr) {
+static int collect_local_type_info(CompilerContext *cc, ASTNode *node, LocalInfo *arr) {
     int n = 0;
     if (!node) return 0;
     switch (node->type) {
     case AST_BLOCK:
         for (int i = 0; i < node->block.count; i++)
-            n += collect_local_type_info(node->block.stmts[i], arr ? (arr + n) : NULL);
+            n += collect_local_type_info(cc, node->block.stmts[i], arr ? (arr + n) : NULL);
         break;
     case AST_VAR_DECL:
         if (arr) {
             arr[n].name = node->var_decl.name;
-            set_localinfo_from_type(&arr[n], node->var_decl.var_type);
+            set_localinfo_from_type(cc, &arr[n], node->var_decl.var_type);
         }
         n++;
         break;
     case AST_FOR:
         if (node->for_stmt.init)
-            n += collect_local_type_info(node->for_stmt.init, arr ? (arr + n) : NULL);
-        n += collect_local_type_info(node->for_stmt.body, arr ? (arr + n) : NULL);
+            n += collect_local_type_info(cc, node->for_stmt.init, arr ? (arr + n) : NULL);
+        n += collect_local_type_info(cc, node->for_stmt.body, arr ? (arr + n) : NULL);
         if (node->for_stmt.inc)
-            n += collect_local_type_info(node->for_stmt.inc, arr ? (arr + n) : NULL);
+            n += collect_local_type_info(cc, node->for_stmt.inc, arr ? (arr + n) : NULL);
         break;
     case AST_IF:
-        n += collect_local_type_info(node->if_stmt.then_stmt, arr ? (arr + n) : NULL);
+        n += collect_local_type_info(cc, node->if_stmt.then_stmt, arr ? (arr + n) : NULL);
         if (node->if_stmt.else_stmt)
-            n += collect_local_type_info(node->if_stmt.else_stmt, arr ? (arr + n) : NULL);
+            n += collect_local_type_info(cc, node->if_stmt.else_stmt, arr ? (arr + n) : NULL);
         break;
     default:
         break;
@@ -1364,6 +1443,10 @@ static void gen_assign(CompilerContext *cc, ASTNode *node, StringBuilder *sb,
         fprintf(stderr, "Codegen error: gen_assign called on non-assignment node\n");
         exit(1);
     }
+    if (lvalue_is_const(cc, node->assign.left)) {
+        fprintf(stderr, "Codegen error: assignment to const lvalue is not allowed\n");
+        exit(1);
+    }
     gen_expr(cc, node->assign.right, sb, "r1", params, param_count, locals, local_count);
     gen_lvalue_addr(cc, node->assign.left, sb, "r3", params, param_count, locals, local_count);
     int is_byte = lvalue_is_byte(cc, node->assign.left);
@@ -1675,7 +1758,7 @@ void gen_func(CompilerContext *cc, ASTNode *node, StringBuilder *sb)
     int local_count = collect_locals(cc, node->fundef.body, locals);
 
     // Collect param + local type info for struct member access
-    int locals_only_count = collect_local_type_info(node->fundef.body, NULL);
+    int locals_only_count = collect_local_type_info(cc, node->fundef.body, NULL);
     cg_locals_count = param_count + locals_only_count;
     if (cg_locals_count > 0) {
         cg_locals_info = (LocalInfo*)malloc(sizeof(LocalInfo) * cg_locals_count);
@@ -1684,11 +1767,11 @@ void gen_func(CompilerContext *cc, ASTNode *node, StringBuilder *sb)
         for (int i = 0; i < param_count; i++, idx++) {
             ASTNode *p = node->fundef.params[i];
             cg_locals_info[idx].name = p->param.name;
-            set_localinfo_from_type(&cg_locals_info[idx], p->param.type);
+            set_localinfo_from_type(cc, &cg_locals_info[idx], p->param.type);
         }
         // Then locals from body
         if (locals_only_count > 0) {
-            collect_local_type_info(node->fundef.body, cg_locals_info + idx);
+            collect_local_type_info(cc, node->fundef.body, cg_locals_info + idx);
         }
     } else {
         cg_locals_info = NULL;
@@ -1741,7 +1824,29 @@ char *codegen(ASTNode *root)
     // Assume each member consumes SLOT_SIZE and lay out sequentially
     cg_struct_count = 0;
     cg_structs = NULL;
+    cg_typedef_count = 0;
+    cg_typedefs = NULL;
     if (root && root->type == AST_BLOCK) {
+        // Pass 1: Collect Typedefs (non-struct)
+        for (int i = 0; i < root->block.count; i++) {
+            ASTNode *n = root->block.stmts[i];
+            if (n->type == AST_TYPEDEF) {
+                LocalInfo tmp = {0};
+                set_localinfo_from_type(cc, &tmp, n->typedef_stmt.src_type);
+                
+                cg_typedefs = (TypedefInfo*)realloc(cg_typedefs, sizeof(TypedefInfo) * (cg_typedef_count + 1));
+                cg_typedefs[cg_typedef_count].alias = n->typedef_stmt.alias;
+                cg_typedefs[cg_typedef_count].info.base_type = tmp.base_type;
+                cg_typedefs[cg_typedef_count].info.pointer_level = tmp.pointer_level;
+                cg_typedefs[cg_typedef_count].info.type_modifiers = tmp.type_modifiers;
+                cg_typedefs[cg_typedef_count].info.is_array = tmp.is_array;
+                cg_typedefs[cg_typedef_count].info.dims_count = tmp.dims_count;
+                for(int k=0; k<8; k++) cg_typedefs[cg_typedef_count].info.dims[k] = tmp.dims[k];
+                cg_typedef_count++;
+            }
+        }
+
+        // Pass 2: Structs
         for (int i = 0; i < root->block.count; i++) {
             ASTNode *n = root->block.stmts[i];
             if (n->type == AST_TYPEDEF_STRUCT) {
@@ -1758,7 +1863,7 @@ char *codegen(ASTNode *root)
                         int member_slots = 1;
                         if (mem->type == AST_VAR_DECL) {
                             mname = mem->var_decl.name ? mem->var_decl.name : "";
-                            set_localinfo_from_type(&tmp, mem->var_decl.var_type);
+                            set_localinfo_from_type(cc, &tmp, mem->var_decl.var_type);
                             if (mem->var_decl.var_type) {
                                 member_slots = slots_for_type(cc, mem->var_decl.var_type);
                                 if (member_slots < 1) member_slots = 1;
@@ -1807,7 +1912,7 @@ char *codegen(ASTNode *root)
                         int member_slots = 1;
                         if (mem->type == AST_VAR_DECL) {
                             mname = mem->var_decl.name ? mem->var_decl.name : "";
-                            set_localinfo_from_type(&tmp, mem->var_decl.var_type);
+                            set_localinfo_from_type(cc, &tmp, mem->var_decl.var_type);
                             if (mem->var_decl.var_type) {
                                 member_slots = slots_for_type(cc, mem->var_decl.var_type);
                                 if (member_slots < 1) member_slots = 1;
@@ -1879,6 +1984,11 @@ char *codegen(ASTNode *root)
         free(cg_structs);
         cg_structs = NULL;
         cg_struct_count = 0;
+    }
+    if (cg_typedefs) {
+        free(cg_typedefs);
+        cg_typedefs = NULL;
+        cg_typedef_count = 0;
     }
     // free string pool
     if (cg_strings) {
